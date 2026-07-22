@@ -1,5 +1,4 @@
 const { Model, DataTypes } = require('sequelize');
-
 module.exports = (sequelize) => {
   class Product extends Model {
     static associate(models) {
@@ -68,6 +67,14 @@ module.exports = (sequelize) => {
     status: {
       type: DataTypes.ENUM('draft', 'published'),
       defaultValue: 'draft',
+    },
+    cloudinaryVideoPublicId: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    cloudinaryAudioPublicId: {
+      type: DataTypes.STRING,
+      allowNull: true,
     },
   }, {
     sequelize,

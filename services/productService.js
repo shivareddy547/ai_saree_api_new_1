@@ -19,6 +19,8 @@ const createProduct = async (data) => {
       customAudioUrl: data.customAudioUrl,
       recordedAudioUrl: data.recordedAudioUrl,
       status: data.status || 'draft',
+      cloudinaryVideoPublicId: data.cloudinaryVideoPublicId,
+      cloudinaryAudioPublicId: data.cloudinaryAudioPublicId,
     };
     const product = await Product.create(productData, { transaction });
     if (data.variants && data.variants.length > 0) {
@@ -102,14 +104,14 @@ const updateProduct = async (id, data) => {
       customAudioUrl: data.customAudioUrl,
       recordedAudioUrl: data.recordedAudioUrl,
       status: data.status || 'draft',
+      cloudinaryVideoPublicId: data.cloudinaryVideoPublicId,
+      cloudinaryAudioPublicId: data.cloudinaryAudioPublicId,
     };
     await product.update(productData, { transaction });
-    // Update variants if provided
     if (data.variants !== undefined) {
-      // Delete existing variants
-      await ProductVariant.destroy({ 
-        where: { productId: id }, 
-        transaction 
+      await ProductVariant.destroy({
+        where: { productId: id },
+        transaction
       });
       if (data.variants && data.variants.length > 0) {
         const variantData = data.variants.map(v => ({
@@ -124,11 +126,10 @@ const updateProduct = async (id, data) => {
         await ProductVariant.bulkCreate(variantData, { transaction });
       }
     }
-    // Update images if provided
     if (data.images !== undefined) {
-      await ProductImage.destroy({ 
-        where: { productId: id }, 
-        transaction 
+      await ProductImage.destroy({
+        where: { productId: id },
+        transaction
       });
       if (data.images && data.images.length > 0) {
         const imageData = data.images.map((url, index) => ({
