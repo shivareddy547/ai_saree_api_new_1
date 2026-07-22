@@ -1,0 +1,29 @@
+.swagger-ui .topbar {
+    background-color: #1a1a2e;
+    padding: 10px 0;
+}
+
+.swagger-ui .topbar .download-url-wrapper .select-label {
+    color: #fff;
+}
+
+.swagger-ui .info .title {
+    color: #1a1a2e;
+}
+
+.swagger-ui .scheme-container {
+    background: #f8f9fa;
+    margin: 0;
+    padding: 20px;
+}
+
+@media (max-width: 768px) {
+    .refresh-btn {
+        padding: 8px 16px;
+        font-size: 12px;
+    }
+
+    .status-indicator {
+        font-size: 10px;
+    }
+}
