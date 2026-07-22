@@ -10,6 +10,8 @@ if (dbConfig.use_env_variable) {
   sequelize = new Sequelize(dbConfig.database, dbConfig.username, dbConfig.password, dbConfig);
 }
 
+// Import ALL models including User
+const User = require('./User')(sequelize);
 const Product = require('./Product')(sequelize);
 const ProductVariant = require('./ProductVariant')(sequelize);
 const ProductImage = require('./ProductImage')(sequelize);
@@ -30,6 +32,7 @@ Category.hasMany(Subcategory, { foreignKey: 'categoryId', as: 'subcategories' })
 const db = {
   sequelize,
   Sequelize,
+  User,  // Add User here
   Product,
   ProductVariant,
   ProductImage,
