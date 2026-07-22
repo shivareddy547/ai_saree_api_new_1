@@ -4,13 +4,13 @@ const createProduct = async (data) => {
   const productData = {
     name: data.name,
     description: data.description,
-    basePrice: data.basePrice,
-    defaultSku: data.defaultSku,
+    basePrice: data.price || data.basePrice,
+    defaultSku: data.sku || data.defaultSku,
     categoryId: data.categoryId,
     subcategoryId: data.subcategoryId,
     videoUrl: data.videoUrl,
-    videoKitUrl: data.videoKitUrl,
-    audioMode: data.audioMode,
+    videoKitUrl: data.videoKitUrl || data.videoUrl,
+    audioMode: data.audioMode || 'text',
     audioScript: data.audioScript,
     audioLanguage: data.audioLanguage,
     voiceGender: data.voiceGender,
@@ -30,7 +30,7 @@ const createProduct = async (data) => {
       color: v.color,
       price: v.price,
       costPrice: v.costPrice,
-      stockQuantity: v.stockQuantity || 0,
+      stockQuantity: parseInt(v.stockQuantity, 10) || 0,
     }));
     await ProductVariant.bulkCreate(variantData);
   }

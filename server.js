@@ -27,12 +27,12 @@ app.get('/health', (req, res) => {
 // API Routes
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/help-us', require('./routes/helpUsRoutes'));
+app.use('/api', require('./routes/productRoutes'));
 
 // Serve Swagger UI from public folder with cache control
 app.get('/api-docs', (req, res) => {
     const indexPath = path.join(__dirname, 'public', 'api-docs', 'index.html');
     if (fs.existsSync(indexPath)) {
-        // Disable caching
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
@@ -48,13 +48,10 @@ app.get('/api-docs', (req, res) => {
 // Serve swagger.json with cache headers disabled
 app.get('/api-docs/swagger.json', (req, res) => {
     const jsonPath = path.join(__dirname, 'public', 'api-docs', 'swagger.json');
-
-    // Disable caching
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
     res.setHeader('Content-Type', 'application/json');
-
     if (fs.existsSync(jsonPath)) {
         res.sendFile(jsonPath);
     } else {
@@ -84,13 +81,12 @@ app.use((err, req, res, next) => {
     });
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('='.repeat(60));
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📚 API Docs: http://localhost:${PORT}/api-docs`);
     console.log(`💡 Health: http://localhost:${PORT}/health`);
-
 });
 
 module.exports = app;

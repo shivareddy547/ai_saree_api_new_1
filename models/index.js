@@ -1,43 +1,40 @@
-'use strict';
-
-const fs = require('fs');
-const path = require('path');
-const Sequelize = require('sequelize');
-const process = require('process');
-const basename = path.basename(__filename);
+const { Sequelize } = require('sequelize');
+const config = require('../config/config');
 const env = process.env.NODE_ENV || 'development';
-const config = require(__dirname + '/../config/config.js')[env];
-const db = {};
+const dbConfig = config[env];
 
 let sequelize;
-if (config.use_env_variable) {
-  sequelize = new Sequelize(process.env[config.use_env_variable], config);
+if (dbConfig.use_env_variable) {
+  sequelize = new Sequelize(process.env[dbConfig.use_env_variable], dbConfig);
 } else {
-  sequelize = new Sequelize(config.database, config.username, config.password, config);
+  sequelize = new Sequelize(dbConfig.database, dbConfig.username, dbConfig.password, dbConfig);
 }
 
-fs
-  .readdirSync(__dirname)
-  .filter(file => {
-    return (
-      file.indexOf('.') !== 0 &&
-      file !== basename &&
-      file.slice(-3) === '.js' &&
-      file.indexOf('.test.js') === -1
-    );
-  })
-  .forEach(file => {
-    const model = require(path.join(__dirname, file))(sequelize, Sequelize.DataTypes);
-    db[model.name] = model;
-  });
+const Product = require('./Product')(sequelize);
+const ProductVariant = require('./ProductVariant')(sequelize);
+const ProductImage = require('./ProductImage')(sequelize);
+const Category = require('./Category')(sequelize);
+const Subcategory = require('./Subcategory')(sequelize);
 
-Object.keys(db).forEach(modelName => {
-  if (db[modelName].associate) {
-    db[modelName].associate(db);
-  }
-});
+// Associations
+Product.hasMany(ProductVariant, { foreignKey: 'productId', as: 'variants' });
+ProductVariant.belongsTo(Product, { foreignKey: 'productId' });
+Product.hasMany(ProductImage, { foreignKey: 'productId', as: 'images' });
+ProductImage.belongsTo(Product, { foreignKey: 'productId' });
+Product.belongsTo(Category, { foreignKey: 'categoryId', as: 'category' });
+Category.hasMany(Product, { foreignKey: 'categoryId', as: 'products' });
+Product.belongsTo(Subcategory, { foreignKey: 'subcategoryId', as: 'subcategory' });
+Subcategory.belongsTo(Category, { foreignKey: 'categoryId', as: 'category' });
+Category.hasMany(Subcategory, { foreignKey: 'categoryId', as: 'subcategories' });
 
-db.sequelize = sequelize;
-db.Sequelize = Sequelize;
+const db = {
+  sequelize,
+  Sequelize,
+  Product,
+  ProductVariant,
+  ProductImage,
+  Category,
+  Subcategory,
+};
 
 module.exports = db;
