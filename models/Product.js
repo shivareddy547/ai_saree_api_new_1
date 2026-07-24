@@ -18,6 +18,10 @@ module.exports = (sequelize) => {
         foreignKey: 'subcategoryId',
         as: 'subcategory'
       });
+      Product.belongsTo(models.User, {
+        foreignKey: 'userId',
+        as: 'user'
+      });
     }
   }
   Product.init({
@@ -25,6 +29,14 @@ module.exports = (sequelize) => {
       type: DataTypes.UUID,
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
+    },
+    userId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      references: {
+        model: 'users',
+        key: 'id',
+      },
     },
     name: {
       type: DataTypes.STRING,

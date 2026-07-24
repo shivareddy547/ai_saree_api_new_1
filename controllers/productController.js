@@ -1,8 +1,9 @@
 const productService = require('../services/productService');
-
 const createProduct = async (req, res) => {
   try {
     const productData = req.body;
+    // Add the logged-in user's ID to the product data
+    productData.userId = req.user.id;
     const product = await productService.createProduct(productData);
     res.status(201).json({
       success: true,
@@ -16,10 +17,10 @@ const createProduct = async (req, res) => {
     });
   }
 };
-
 const getProducts = async (req, res) => {
   try {
-    const products = await productService.getProducts();
+    // Only get products belonging to the logged-in user
+    const products = await productService.getProducts(req.user.id);
     res.json({
       success: true,
       data: products,
@@ -31,7 +32,6 @@ const getProducts = async (req, res) => {
     });
   }
 };
-
 const getProduct = async (req, res) => {
   try {
     const product = await productService.getProduct(req.params.id);
@@ -39,6 +39,13 @@ const getProduct = async (req, res) => {
       return res.status(404).json({
         success: false,
         error: 'Product not found',
+      });
+    }
+    // Check if the product belongs to the logged-in user
+    if (product.userId !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        error: 'You do not have permission to access this product',
       });
     }
     res.json({
@@ -52,11 +59,25 @@ const getProduct = async (req, res) => {
     });
   }
 };
-
 const updateProduct = async (req, res) => {
   try {
     const productId = req.params.id;
+    // First check if the product exists and belongs to the user
+    const existingProduct = await productService.getProduct(productId);
+    if (!existingProduct) {
+      return res.status(404).json({
+        success: false,
+        error: 'Product not found',
+      });
+    }
+    if (existingProduct.userId !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        error: 'You do not have permission to update this product',
+      });
+    }
     const productData = req.body;
+    productData.userId = req.user.id;
     const product = await productService.updateProduct(productId, productData);
     if (!product) {
       return res.status(404).json({
@@ -76,10 +97,23 @@ const updateProduct = async (req, res) => {
     });
   }
 };
-
 const deleteProduct = async (req, res) => {
   try {
     const productId = req.params.id;
+    // First check if the product exists and belongs to the user
+    const existingProduct = await productService.getProduct(productId);
+    if (!existingProduct) {
+      return res.status(404).json({
+        success: false,
+        error: 'Product not found',
+      });
+    }
+    if (existingProduct.userId !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        error: 'You do not have permission to delete this product',
+      });
+    }
     const deleted = await productService.deleteProduct(productId);
     if (!deleted) {
       return res.status(404).json({
@@ -99,5 +133,4 @@ const deleteProduct = async (req, res) => {
     });
   }
 };
-
 module.exports = { createProduct, getProducts, getProduct, updateProduct, deleteProduct };
