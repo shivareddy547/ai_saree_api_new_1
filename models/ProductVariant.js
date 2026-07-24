@@ -3,17 +3,20 @@ const { Model, DataTypes } = require('sequelize');
 module.exports = (sequelize) => {
   class ProductVariant extends Model {
     static associate(models) {
-      // associations defined in index
+      ProductVariant.belongsTo(models.Product, {
+        foreignKey: 'productId',
+        as: 'product'
+      });
     }
   }
   ProductVariant.init({
     id: {
-      type: DataTypes.INTEGER,
-      autoIncrement: true,
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
     productId: {
-      type: DataTypes.INTEGER,
+      type: DataTypes.UUID,
       allowNull: false,
       references: {
         model: 'products',

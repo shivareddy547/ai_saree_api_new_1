@@ -3,17 +3,20 @@ const { Model, DataTypes } = require('sequelize');
 module.exports = (sequelize) => {
   class ProductImage extends Model {
     static associate(models) {
-      // associations defined in index
+      ProductImage.belongsTo(models.Product, {
+        foreignKey: 'productId',
+        as: 'product'
+      });
     }
   }
   ProductImage.init({
     id: {
-      type: DataTypes.INTEGER,
-      autoIncrement: true,
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
     productId: {
-      type: DataTypes.INTEGER,
+      type: DataTypes.UUID,
       allowNull: false,
       references: {
         model: 'products',
@@ -26,7 +29,7 @@ module.exports = (sequelize) => {
     },
     position: {
       type: DataTypes.INTEGER,
-      defaultValue: 0,
+      allowNull: true,
     },
   }, {
     sequelize,

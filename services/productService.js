@@ -1,4 +1,5 @@
 const { Product, ProductVariant, ProductImage, Category, Subcategory, sequelize } = require('../models');
+
 const createProduct = async (data) => {
   const transaction = await sequelize.transaction();
   try {
@@ -22,7 +23,9 @@ const createProduct = async (data) => {
       cloudinaryVideoPublicId: data.cloudinaryVideoPublicId,
       cloudinaryAudioPublicId: data.cloudinaryAudioPublicId,
     };
+    
     const product = await Product.create(productData, { transaction });
+    
     if (data.variants && data.variants.length > 0) {
       const variantData = data.variants.map(v => ({
         productId: product.id,
@@ -35,6 +38,7 @@ const createProduct = async (data) => {
       }));
       await ProductVariant.bulkCreate(variantData, { transaction });
     }
+    
     if (data.images && data.images.length > 0) {
       const imageData = data.images.map((url, index) => ({
         productId: product.id,
@@ -43,7 +47,9 @@ const createProduct = async (data) => {
       }));
       await ProductImage.bulkCreate(imageData, { transaction });
     }
+    
     await transaction.commit();
+    
     const fullProduct = await Product.findByPk(product.id, {
       include: [
         { model: ProductVariant, as: 'variants' },
@@ -52,12 +58,16 @@ const createProduct = async (data) => {
         { model: Subcategory, as: 'subcategory' },
       ],
     });
+    
     return fullProduct;
   } catch (error) {
-    await transaction.rollback();
+    if (transaction.finished !== 'commit' && transaction.finished !== 'rollback') {
+      await transaction.rollback();
+    }
     throw error;
   }
 };
+
 const getProducts = async () => {
   return await Product.findAll({
     include: [
@@ -69,6 +79,7 @@ const getProducts = async () => {
     order: [['createdAt', 'DESC']],
   });
 };
+
 const getProduct = async (id) => {
   return await Product.findByPk(id, {
     include: [
@@ -79,14 +90,18 @@ const getProduct = async (id) => {
     ],
   });
 };
+
 const updateProduct = async (id, data) => {
   const transaction = await sequelize.transaction();
   try {
     const product = await Product.findByPk(id);
     if (!product) {
-      await transaction.rollback();
+      if (transaction.finished !== 'commit' && transaction.finished !== 'rollback') {
+        await transaction.rollback();
+      }
       return null;
     }
+    
     const productData = {
       name: data.name,
       description: data.description,
@@ -107,7 +122,9 @@ const updateProduct = async (id, data) => {
       cloudinaryVideoPublicId: data.cloudinaryVideoPublicId,
       cloudinaryAudioPublicId: data.cloudinaryAudioPublicId,
     };
+    
     await product.update(productData, { transaction });
+    
     if (data.variants !== undefined) {
       await ProductVariant.destroy({
         where: { productId: id },
@@ -126,6 +143,7 @@ const updateProduct = async (id, data) => {
         await ProductVariant.bulkCreate(variantData, { transaction });
       }
     }
+    
     if (data.images !== undefined) {
       await ProductImage.destroy({
         where: { productId: id },
@@ -140,7 +158,9 @@ const updateProduct = async (id, data) => {
         await ProductImage.bulkCreate(imageData, { transaction });
       }
     }
+    
     await transaction.commit();
+    
     const fullProduct = await Product.findByPk(id, {
       include: [
         { model: ProductVariant, as: 'variants' },
@@ -151,10 +171,13 @@ const updateProduct = async (id, data) => {
     });
     return fullProduct;
   } catch (error) {
-    await transaction.rollback();
+    if (transaction.finished !== 'commit' && transaction.finished !== 'rollback') {
+      await transaction.rollback();
+    }
     throw error;
   }
 };
+
 const deleteProduct = async (id) => {
   const product = await Product.findByPk(id);
   if (!product) {
@@ -163,4 +186,5 @@ const deleteProduct = async (id) => {
   await product.destroy();
   return true;
 };
+
 module.exports = { createProduct, getProducts, getProduct, updateProduct, deleteProduct };

@@ -3,7 +3,14 @@ const { Model, DataTypes } = require('sequelize');
 module.exports = (sequelize) => {
   class Subcategory extends Model {
     static associate(models) {
-      // associations defined in index
+      Subcategory.belongsTo(models.Category, {
+        foreignKey: 'categoryId',
+        as: 'category'
+      });
+      Subcategory.hasMany(models.Product, {
+        foreignKey: 'subcategoryId',
+        as: 'products'
+      });
     }
   }
   Subcategory.init({

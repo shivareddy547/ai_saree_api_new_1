@@ -2,13 +2,28 @@ const { Model, DataTypes } = require('sequelize');
 module.exports = (sequelize) => {
   class Product extends Model {
     static associate(models) {
-      // associations defined in index
+      Product.hasMany(models.ProductVariant, {
+        foreignKey: 'productId',
+        as: 'variants'
+      });
+      Product.hasMany(models.ProductImage, {
+        foreignKey: 'productId',
+        as: 'images'
+      });
+      Product.belongsTo(models.Category, {
+        foreignKey: 'categoryId',
+        as: 'category'
+      });
+      Product.belongsTo(models.Subcategory, {
+        foreignKey: 'subcategoryId',
+        as: 'subcategory'
+      });
     }
   }
   Product.init({
     id: {
-      type: DataTypes.INTEGER,
-      autoIncrement: true,
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
     name: {
