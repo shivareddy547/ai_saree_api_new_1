@@ -1,153 +1,276 @@
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
-const { User } = require('../models');
+const instagramService =
+  require('../services/instagramService');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'sareevibe-dev-secret-key';
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+/**
+ * GET /api/instagram/auth
+ *
+ * Start Instagram OAuth
+ */
+exports.auth = async (req, res) => {
+  try {
 
-const generateOtp = () => {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    const authUrl =
+      instagramService.getOAuthUrl();
+
+    return res.redirect(
+      authUrl
+    );
+
+  } catch (error) {
+
+    console.error(
+      'Instagram auth error:',
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      error:
+        error.message
+    });
+  }
 };
 
-const signup = async ({ fullName, email, password }) => {
-    const existingUser = await User.findOne({ where: { email } });
-    if (existingUser) {
-        const error = new Error('User with this email already exists');
-        error.status = 409;
-        throw error;
+/**
+ * GET /api/instagram/callback
+ *
+ * Instagram redirects here
+ */
+exports.callback = async (
+  req,
+  res
+) => {
+
+  try {
+
+    const {
+      code,
+      error,
+      error_reason,
+      error_description
+    } = req.query;
+
+    console.log(
+      'Instagram OAuth callback:',
+      {
+        codeReceived: !!code,
+        error,
+        error_reason,
+        error_description
+      }
+    );
+
+    // User rejected authorization
+    if (error) {
+
+      return res.status(400).json({
+        success: false,
+
+        error,
+
+        error_reason,
+
+        error_description
+      });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const otp = generateOtp();
-    const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
+    if (!code) {
 
-    const user = await User.create({
-        fullName,
-        email,
-        password: hashedPassword,
-        isEmailVerified: false,
-        otp,
-        otpExpires,
+      return res.status(400).json({
+        success: false,
+
+        error:
+          'Instagram authorization code was not received'
+      });
+    }
+
+    /**
+     * IMPORTANT:
+     *
+     * We need to know which application user
+     * initiated the OAuth request.
+     *
+     * For production, use a signed state parameter.
+     *
+     * For now, this expects:
+     *
+     * ?user_id=123
+     *
+     * You should replace this with your
+     * authenticated session/JWT user ID.
+     */
+
+    const userId =
+      req.query.user_id;
+
+    if (!userId) {
+
+      return res.status(400).json({
+        success: false,
+
+        error:
+          'user_id is required to connect Instagram account'
+      });
+    }
+
+    const result =
+      await instagramService.connectAccount(
+        userId,
+        code
+      );
+
+    return res.json({
+      success: true,
+
+      message:
+        'Instagram account connected successfully',
+
+      data:
+        result
     });
 
-    return {
-        id: user.id,
-        fullName: user.fullName,
-        email: user.email,
-        isEmailVerified: user.isEmailVerified,
-        message: 'Signup successful. Please verify the OTP sent to your email.',
-    };
-};
+  } catch (error) {
 
-const login = async ({ email, password }) => {
-    const user = await User.findOne({ where: { email } });
-    if (!user) {
-        const error = new Error('Invalid email or password');
-        error.status = 401;
-        throw error;
-    }
-
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-        const error = new Error('Invalid email or password');
-        error.status = 401;
-        throw error;
-    }
-
-    if (!user.isEmailVerified) {
-        const error = new Error('Please verify your email before logging in');
-        error.status = 403;
-        throw error;
-    }
-
-    const token = jwt.sign(
-        { id: user.id, email: user.email },
-        JWT_SECRET,
-        { expiresIn: JWT_EXPIRES_IN }
+    console.error(
+      'Instagram OAuth callback error:',
+      error
     );
 
-    return {
-        id: user.id,
-        fullName: user.fullName,
-        email: user.email,
-        isEmailVerified: user.isEmailVerified,
-        token,
-        message: 'Login successful',
-    };
+    return res.status(500).json({
+      success: false,
+
+      error:
+        error.message
+    });
+  }
 };
 
-const verifyOtp = async ({ email, otp }) => {
-    const user = await User.findOne({ where: { email } });
-    if (!user) {
-        const error = new Error('User not found');
-        error.status = 404;
-        throw error;
+/**
+ * GET /api/instagram/status
+ */
+exports.status = async (
+  req,
+  res
+) => {
+
+  try {
+
+    const userId =
+      req.user.id;
+
+    const result =
+      await instagramService.getAccountStatus(
+        userId
+      );
+
+    return res.json({
+      success: true,
+
+      data:
+        result
+    });
+
+  } catch (error) {
+
+    return res.status(500).json({
+      success: false,
+
+      error:
+        error.message
+    });
+  }
+};
+
+/**
+ * DELETE /api/instagram/disconnect
+ */
+exports.disconnect = async (
+  req,
+  res
+) => {
+
+  try {
+
+    const userId =
+      req.user.id;
+
+    const result =
+      await instagramService.disconnectAccount(
+        userId
+      );
+
+    return res.json({
+      success: true,
+
+      data:
+        result
+    });
+
+  } catch (error) {
+
+    return res.status(500).json({
+      success: false,
+
+      error:
+        error.message
+    });
+  }
+};
+
+/**
+ * POST /api/instagram/reels
+ */
+exports.postReel = async (
+  req,
+  res
+) => {
+
+  try {
+
+    const userId =
+      req.user.id;
+
+    const {
+      videoUrl,
+      caption
+    } = req.body;
+
+    if (!videoUrl) {
+
+      return res.status(400).json({
+        success: false,
+
+        error:
+          'videoUrl is required'
+      });
     }
 
-    if (user.isEmailVerified) {
-        const error = new Error('Email is already verified');
-        error.status = 400;
-        throw error;
-    }
+    const result =
+      await instagramService.postReel(
+        userId,
+        videoUrl,
+        caption
+      );
 
-    if (!user.otp || !user.otpExpires) {
-        const error = new Error('No OTP found. Please request a new one.');
-        error.status = 400;
-        throw error;
-    }
+    return res.json({
+      success: true,
 
-    if (user.otp !== otp) {
-        const error = new Error('Invalid OTP');
-        error.status = 400;
-        throw error;
-    }
+      data:
+        result
+    });
 
-    if (new Date() > new Date(user.otpExpires)) {
-        const error = new Error('OTP has expired. Please request a new one.');
-        error.status = 400;
-        throw error;
-    }
+  } catch (error) {
 
-    await User.update(
-        { isEmailVerified: true, otp: null, otpExpires: null },
-        { where: { id: user.id } }
+    console.error(
+      'Instagram Reel controller error:',
+      error
     );
 
-    return {
-        message: 'Email verified successfully. You can now login.',
-    };
-};
+    return res.status(500).json({
+      success: false,
 
-const resendOtp = async ({ email }) => {
-    const user = await User.findOne({ where: { email } });
-    if (!user) {
-        const error = new Error('User not found');
-        error.status = 404;
-        throw error;
-    }
-
-    if (user.isEmailVerified) {
-        const error = new Error('Email is already verified');
-        error.status = 400;
-        throw error;
-    }
-
-    const otp = generateOtp();
-    const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
-
-    await User.update(
-        { otp, otpExpires },
-        { where: { id: user.id } }
-    );
-
-    return {
-        message: 'New OTP sent to your email.',
-    };
-};
-
-module.exports = {
-    signup,
-    login,
-    verifyOtp,
-    resendOtp,
+      error:
+        error.message
+    });
+  }
 };
