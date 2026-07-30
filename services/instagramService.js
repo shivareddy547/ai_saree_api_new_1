@@ -3,7 +3,6 @@ const { User } = require('../models');
 
 // Instagram API configuration
 const INSTAGRAM_API_BASE = 'https://graph.instagram.com/v23.0';
-const FACEBOOK_OAUTH_BASE = 'https://www.facebook.com/v23.0/dialog/oauth';
 const INSTAGRAM_OAUTH_BASE = 'https://api.instagram.com/oauth';
 
 // Get Instagram App credentials from environment
@@ -20,18 +19,17 @@ const getAppCredentials = () => {
 
 /**
  * Get OAuth URL for Instagram authorization
- * Uses Facebook OAuth endpoint for Instagram Graph API
  * @param {string} redirectUri - Redirect URI for OAuth callback
  * @returns {string} OAuth URL
  */
 exports.getOAuthUrl = (redirectUri) => {
   const { clientId } = getAppCredentials();
   
-  // For Instagram Basic Display API
-  const scope = 'instagram_business_basic,instagram_business_content_publish,instagram_business_manage_messages,instagram_business_manage_comments';
+  // Instagram Business scopes
+  const scope = 'instagram_business_basic,instagram_business_content_publish,instagram_business_manage_messages,instagram_business_manage_comments,instagram_business_manage_insights';
   
-  // Use Instagram OAuth for Basic Display
-  return `${INSTAGRAM_OAUTH_BASE}/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri || process.env.INSTAGRAM_REDIRECT_URI)}&scope=${encodeURIComponent(scope)}&response_type=code`;
+  // Use Instagram OAuth for Business API
+  return `${INSTAGRAM_OAUTH_BASE}/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri || process.env.INSTAGRAM_REDIRECT_URI)}&scope=${encodeURIComponent(scope)}&response_type=code&force_reauth=true`;
 };
 
 /**
@@ -369,7 +367,6 @@ exports.postReel = async (userId, videoUrl, mediaType = 'REELS') => {
 
   } catch (error) {
     console.error('Instagram post error:', error.response?.data || error.message);
-    // Handle Axios errors with response data
     if (error.response) {
       const errorMessage = error.response.data?.error?.message || 
                          error.response.data?.message || 
