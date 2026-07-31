@@ -1,4 +1,5 @@
 const { Model, DataTypes } = require('sequelize');
+
 module.exports = (sequelize) => {
   class User extends Model {
     static associate(models) {
