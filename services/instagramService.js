@@ -1,22 +1,17 @@
 const axios = require('axios');
 const { User } = require('../models');
-
 // Instagram API configuration
 const INSTAGRAM_API_BASE = 'https://graph.instagram.com/v23.0';
 const INSTAGRAM_OAUTH_BASE = 'https://api.instagram.com/oauth';
-
 // Get Instagram App credentials from environment
 const getAppCredentials = () => {
   const clientId = process.env.INSTAGRAM_APP_ID;
   const clientSecret = process.env.INSTAGRAM_APP_SECRET;
-  
   if (!clientId || !clientSecret) {
     throw new Error('INSTAGRAM_APP_ID and INSTAGRAM_APP_SECRET must be configured in environment');
   }
-  
   return { clientId, clientSecret };
 };
-
 /**
  * Get OAuth URL for Instagram authorization
  * @param {string} redirectUri - Redirect URI for OAuth callback
@@ -24,14 +19,11 @@ const getAppCredentials = () => {
  */
 exports.getOAuthUrl = (redirectUri) => {
   const { clientId } = getAppCredentials();
-  
   // Instagram Business scopes
   const scope = 'instagram_business_basic,instagram_business_content_publish,instagram_business_manage_messages,instagram_business_manage_comments,instagram_business_manage_insights';
-  
   // Use Instagram OAuth for Business API
   return `${INSTAGRAM_OAUTH_BASE}/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri || process.env.INSTAGRAM_REDIRECT_URI)}&scope=${encodeURIComponent(scope)}&response_type=code&force_reauth=true`;
 };
-
 /**
  * Exchange authorization code for access token
  * @param {string} code - Authorization code from Instagram
@@ -40,7 +32,6 @@ exports.getOAuthUrl = (redirectUri) => {
  */
 const exchangeCodeForToken = async (code, redirectUri) => {
   const { clientId, clientSecret } = getAppCredentials();
-  
   try {
     const response = await axios.post(
       `${INSTAGRAM_OAUTH_BASE}/access_token`,
@@ -57,7 +48,6 @@ const exchangeCodeForToken = async (code, redirectUri) => {
         }
       }
     );
-    
     return response.data;
   } catch (error) {
     console.error('Token exchange error:', error.response?.data);
@@ -67,7 +57,6 @@ const exchangeCodeForToken = async (code, redirectUri) => {
     throw error;
   }
 };
-
 /**
  * Get long-lived access token
  * @param {string} shortLivedToken - Short-lived access token
@@ -75,7 +64,6 @@ const exchangeCodeForToken = async (code, redirectUri) => {
  */
 const getLongLivedToken = async (shortLivedToken) => {
   const { clientSecret } = getAppCredentials();
-  
   try {
     const response = await axios.get(
       `${INSTAGRAM_API_BASE}/access_token`,
@@ -87,7 +75,6 @@ const getLongLivedToken = async (shortLivedToken) => {
         }
       }
     );
-    
     return response.data;
   } catch (error) {
     console.error('Token exchange error:', error.response?.data);
@@ -97,7 +84,6 @@ const getLongLivedToken = async (shortLivedToken) => {
     throw error;
   }
 };
-
 /**
  * Get Instagram user info
  * @param {string} accessToken - Access token
@@ -115,7 +101,6 @@ const getInstagramUserInfo = async (accessToken, accountId) => {
         }
       }
     );
-    
     return response.data;
   } catch (error) {
     console.error('User info error:', error.response?.data);
@@ -125,7 +110,6 @@ const getInstagramUserInfo = async (accessToken, accountId) => {
     throw error;
   }
 };
-
 /**
  * Connect Instagram account for a user
  * @param {string} userId - User ID
@@ -137,34 +121,27 @@ exports.connectAccount = async (userId, code, redirectUri) => {
   try {
     // Exchange code for short-lived token
     const tokenData = await exchangeCodeForToken(code, redirectUri);
-    
     console.log('Token data received:', { 
       user_id: tokenData.user_id,
       access_token_length: tokenData.access_token?.length,
       expires_in: tokenData.expires_in
     });
-
     // Get long-lived token
     const longLivedData = await getLongLivedToken(tokenData.access_token);
-    
     console.log('Long-lived token received:', {
       access_token_length: longLivedData.access_token?.length,
       expires_in: longLivedData.expires_in
     });
-
     // Get user info
     const userInfo = await getInstagramUserInfo(longLivedData.access_token, tokenData.user_id);
-    
     console.log('User info received:', {
       username: userInfo.username,
       account_type: userInfo.account_type,
       media_count: userInfo.media_count
     });
-
     // Calculate token expiry
     const expiresIn = longLivedData.expires_in || 60 * 24 * 60 * 60; // Default 60 days
     const expiresAt = new Date(Date.now() + expiresIn * 1000);
-    
     // Store in database
     await User.update({
       instagramAccessToken: longLivedData.access_token,
@@ -175,7 +152,6 @@ exports.connectAccount = async (userId, code, redirectUri) => {
     }, {
       where: { id: userId }
     });
-    
     return {
       connected: true,
       accountId: tokenData.user_id,
@@ -189,7 +165,6 @@ exports.connectAccount = async (userId, code, redirectUri) => {
     throw error;
   }
 };
-
 /**
  * Get Instagram account status for a user
  * @param {string} userId - User ID
@@ -205,11 +180,9 @@ exports.getAccountStatus = async (userId) => {
       'instagramTokenExpiresAt'
     ]
   });
-  
   if (!user) {
     throw new Error('User not found');
   }
-  
   // Check if user has token and it's not expired
   if (!user.instagramAccessToken || !user.instagramAccountId) {
     return {
@@ -217,7 +190,6 @@ exports.getAccountStatus = async (userId) => {
       error: 'Instagram account not connected'
     };
   }
-  
   // Check if token is expired
   if (user.instagramTokenExpiresAt && new Date(user.instagramTokenExpiresAt) < new Date()) {
     return {
@@ -227,14 +199,12 @@ exports.getAccountStatus = async (userId) => {
       error: 'Token expired. Please reconnect your account.'
     };
   }
-  
   // Test token by making a call to Instagram API
   try {
     const userInfo = await getInstagramUserInfo(
       user.instagramAccessToken,
       user.instagramAccountId
     );
-    
     return {
       connected: true,
       accountId: user.instagramAccountId,
@@ -254,7 +224,6 @@ exports.getAccountStatus = async (userId) => {
     };
   }
 };
-
 /**
  * Disconnect Instagram account
  * @param {string} userId - User ID
@@ -270,13 +239,11 @@ exports.disconnectAccount = async (userId) => {
   }, {
     where: { id: userId }
   });
-  
   return {
     disconnected: true,
     message: 'Instagram account disconnected successfully'
   };
 };
-
 /**
  * Get user's Instagram access token
  * @param {string} userId - User ID
@@ -286,22 +253,18 @@ const getUserAccessToken = async (userId) => {
   const user = await User.findByPk(userId, {
     attributes: ['instagramAccessToken', 'instagramAccountId', 'instagramTokenExpiresAt']
   });
-  
   if (!user || !user.instagramAccessToken) {
     throw new Error('Instagram account not connected for this user');
   }
-  
   // Check if token is expired
   if (user.instagramTokenExpiresAt && new Date(user.instagramTokenExpiresAt) < new Date()) {
     throw new Error('Instagram token expired. Please reconnect your account.');
   }
-  
   return {
     accessToken: user.instagramAccessToken,
     accountId: user.instagramAccountId
   };
 };
-
 /**
  * Post a video reel to Instagram
  * @param {string} userId - User ID
@@ -312,9 +275,7 @@ const getUserAccessToken = async (userId) => {
 exports.postReel = async (userId, videoUrl, mediaType = 'REELS') => {
   try {
     const { accessToken, accountId } = await getUserAccessToken(userId);
-
     console.log('Posting to Instagram:', { accountId, videoUrl, mediaType });
-
     // Step 1: Create media container
     const createMediaResponse = await axios.post(
       `${INSTAGRAM_API_BASE}/${accountId}/media`,
@@ -329,15 +290,11 @@ exports.postReel = async (userId, videoUrl, mediaType = 'REELS') => {
         }
       }
     );
-
     const mediaId = createMediaResponse.data.id;
-    
     if (!mediaId) {
       throw new Error('Failed to create media container: No ID returned');
     }
-
     console.log('Instagram media container created:', mediaId);
-
     // Step 2: Publish the media
     const publishResponse = await axios.post(
       `${INSTAGRAM_API_BASE}/${accountId}/media_publish`,
@@ -351,20 +308,15 @@ exports.postReel = async (userId, videoUrl, mediaType = 'REELS') => {
         }
       }
     );
-
     const publishId = publishResponse.data.id;
-    
     if (!publishId) {
       throw new Error('Failed to publish media: No ID returned');
     }
-
     console.log('Instagram video published:', publishId);
-
     return {
       media_id: mediaId,
       publish_id: publishId
     };
-
   } catch (error) {
     console.error('Instagram post error:', error.response?.data || error.message);
     if (error.response) {

@@ -1,5 +1,4 @@
 const instagramService = require('../services/instagramService');
-
 /**
  * Get Instagram OAuth URL
  * @param {Object} req - Express request object
@@ -20,7 +19,6 @@ exports.getOAuthUrl = async (req, res, next) => {
     next(error);
   }
 };
-
 /**
  * Connect Instagram account using authorization code
  * @param {Object} req - Express request object
@@ -30,16 +28,13 @@ exports.getOAuthUrl = async (req, res, next) => {
 exports.connectInstagram = async (req, res, next) => {
   try {
     const { code, redirectUri } = req.body;
-    
     if (!code) {
       const err = new Error('Authorization code is required');
       err.status = 400;
       throw err;
     }
-
     const userId = req.user.id;
     const result = await instagramService.connectAccount(userId, code, redirectUri);
-    
     res.status(200).json({
       success: true,
       data: result,
@@ -50,7 +45,6 @@ exports.connectInstagram = async (req, res, next) => {
     next(error);
   }
 };
-
 /**
  * Get Instagram account status for current user
  * @param {Object} req - Express request object
@@ -71,7 +65,6 @@ exports.getInstagramStatus = async (req, res, next) => {
     next(error);
   }
 };
-
 /**
  * Disconnect Instagram account
  * @param {Object} req - Express request object
@@ -92,7 +85,6 @@ exports.disconnectInstagram = async (req, res, next) => {
     next(error);
   }
 };
-
 /**
  * Post a video to Instagram Reels
  * @param {Object} req - Express request object
@@ -103,22 +95,18 @@ exports.postToInstagram = async (req, res, next) => {
   try {
     const { video_url, media_type = 'REELS' } = req.body;
     const userId = req.user.id;
-    
     if (!video_url) {
       const err = new Error('video_url is required');
       err.status = 400;
       throw err;
     }
-
     // Validate video_url format
     if (!video_url.startsWith('http://') && !video_url.startsWith('https://')) {
       const err = new Error('video_url must be a valid HTTP/HTTPS URL');
       err.status = 400;
       throw err;
     }
-
     const result = await instagramService.postReel(userId, video_url, media_type);
-    
     res.status(200).json({
       success: true,
       data: {
