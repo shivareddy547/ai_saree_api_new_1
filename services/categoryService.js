@@ -94,8 +94,6 @@ class CategoryService {
       // Handle image upload
       let finalImageUrl = imageUrl || null;
       if (file) {
-        // If file upload is implemented, save file and set URL
-        // For now, we'll just use the file information
         finalImageUrl = `/uploads/categories/${file.filename}`;
       }
       const category = await Category.create({

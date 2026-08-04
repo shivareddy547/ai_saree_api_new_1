@@ -20,8 +20,8 @@ module.exports = (sequelize) => {
   }
   Category.init({
     id: {
-      type: DataTypes.UUID,
-      defaultValue: DataTypes.UUIDV4,
+      type: DataTypes.INTEGER,
+      autoIncrement: true,
       primaryKey: true,
     },
     name: {
@@ -68,7 +68,7 @@ module.exports = (sequelize) => {
       defaultValue: true,
     },
     parentId: {
-      type: DataTypes.UUID,
+      type: DataTypes.INTEGER,
       allowNull: true,
       references: {
         model: 'categories',
