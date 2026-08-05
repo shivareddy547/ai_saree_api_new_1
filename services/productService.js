@@ -2,6 +2,21 @@ const { Product, ProductVariant, ProductImage, Category, Subcategory, sequelize 
 const createProduct = async (data) => {
   const transaction = await sequelize.transaction();
   try {
+    // Validate subcategory if provided
+    if (data.subcategoryId) {
+      const subcategoryId = parseInt(data.subcategoryId, 10);
+      const subcategory = await Subcategory.findByPk(subcategoryId);
+      if (!subcategory) {
+        throw new Error('Invalid subcategory ID');
+      }
+      // Check if subcategory belongs to the selected category
+      if (data.categoryId) {
+        const categoryId = parseInt(data.categoryId, 10);
+        if (subcategory.categoryId !== categoryId) {
+          throw new Error('Subcategory does not belong to the selected category');
+        }
+      }
+    }
     const productData = {
       userId: data.userId,
       name: data.name,
@@ -92,6 +107,21 @@ const updateProduct = async (id, data) => {
         await transaction.rollback();
       }
       return null;
+    }
+    // Validate subcategory if provided
+    if (data.subcategoryId) {
+      const subcategoryId = parseInt(data.subcategoryId, 10);
+      const subcategory = await Subcategory.findByPk(subcategoryId);
+      if (!subcategory) {
+        throw new Error('Invalid subcategory ID');
+      }
+      // Check if subcategory belongs to the selected category
+      if (data.categoryId) {
+        const categoryId = parseInt(data.categoryId, 10);
+        if (subcategory.categoryId !== categoryId) {
+          throw new Error('Subcategory does not belong to the selected category');
+        }
+      }
     }
     const productData = {
       userId: data.userId,
