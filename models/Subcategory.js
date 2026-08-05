@@ -1,5 +1,4 @@
 const { Model, DataTypes } = require('sequelize');
-
 module.exports = (sequelize) => {
   class Subcategory extends Model {
     static associate(models) {
@@ -15,11 +14,12 @@ module.exports = (sequelize) => {
   }
   Subcategory.init({
     id: {
-      type: DataTypes.STRING,
+      type: DataTypes.INTEGER,
+      autoIncrement: true,
       primaryKey: true,
     },
     categoryId: {
-      type: DataTypes.STRING,
+      type: DataTypes.INTEGER,
       allowNull: false,
       references: {
         model: 'categories',
@@ -34,6 +34,7 @@ module.exports = (sequelize) => {
     sequelize,
     modelName: 'Subcategory',
     tableName: 'subcategories',
+    timestamps: true,
   });
   return Subcategory;
 };

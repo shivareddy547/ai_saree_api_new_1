@@ -52,11 +52,11 @@ module.exports = (sequelize) => {
       type: DataTypes.STRING,
     },
     categoryId: {
-      type: DataTypes.STRING,
+      type: DataTypes.INTEGER,
       allowNull: true,
     },
     subcategoryId: {
-      type: DataTypes.STRING,
+      type: DataTypes.INTEGER,
       allowNull: true,
     },
     videoUrl: {
