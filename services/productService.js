@@ -1,37 +1,46 @@
 const { Product, ProductVariant, ProductImage, Category, Subcategory, sequelize } = require('../models');
+// Helper to sanitize numeric fields: convert empty string to null (or 0 for required fields)
+const sanitizeNumeric = (value, defaultValue = null) => {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue;
+  }
+  const num = parseFloat(value);
+  return isNaN(num) ? defaultValue : num;
+};
 const createProduct = async (data) => {
   const transaction = await sequelize.transaction();
   try {
-    // Validate subcategory if provided
-    if (data.subcategoryId) {
-      const subcategoryId = parseInt(data.subcategoryId, 10);
-      const subcategory = await Subcategory.findByPk(subcategoryId);
+    // Validate subcategory if provided - if invalid, set to null
+    let finalSubcategoryId = data.subcategoryId ? parseInt(data.subcategoryId, 10) : null;
+    if (finalSubcategoryId) {
+      const subcategory = await Subcategory.findByPk(finalSubcategoryId);
       if (!subcategory) {
-        throw new Error('Invalid subcategory ID');
-      }
-      // Check if subcategory belongs to the selected category
-      if (data.categoryId) {
+        finalSubcategoryId = null;
+      } else if (data.categoryId) {
         const categoryId = parseInt(data.categoryId, 10);
         if (subcategory.categoryId !== categoryId) {
-          throw new Error('Subcategory does not belong to the selected category');
+          finalSubcategoryId = null;
         }
       }
     }
+    // Sanitize numeric fields
+    const basePrice = sanitizeNumeric(data.price || data.basePrice);
+    const videoLength = sanitizeNumeric(data.videoLength);
     const productData = {
       userId: data.userId,
       name: data.name,
       description: data.description,
-      basePrice: data.price || data.basePrice,
+      basePrice: basePrice,
       defaultSku: data.sku || data.defaultSku,
       categoryId: data.categoryId ? parseInt(data.categoryId, 10) : null,
-      subcategoryId: data.subcategoryId ? parseInt(data.subcategoryId, 10) : null,
+      subcategoryId: finalSubcategoryId,
       videoUrl: data.videoUrl,
       videoKitUrl: data.videoKitUrl || data.videoUrl,
       audioMode: data.audioMode || 'text',
       audioScript: data.audioScript,
       audioLanguage: data.audioLanguage,
       voiceGender: data.voiceGender,
-      videoLength: data.videoLength,
+      videoLength: videoLength,
       customAudioUrl: data.customAudioUrl,
       recordedAudioUrl: data.recordedAudioUrl,
       status: data.status || 'draft',
@@ -40,15 +49,21 @@ const createProduct = async (data) => {
     };
     const product = await Product.create(productData, { transaction });
     if (data.variants && data.variants.length > 0) {
-      const variantData = data.variants.map(v => ({
-        productId: product.id,
-        sku: v.sku,
-        size: v.size,
-        color: v.color,
-        price: v.price,
-        costPrice: v.costPrice,
-        stockQuantity: parseInt(v.stockQuantity, 10) || 0,
-      }));
+      const variantData = data.variants.map(v => {
+        // Sanitize numeric fields for variants
+        const price = sanitizeNumeric(v.price, 0); // price is required, default to 0
+        const costPrice = sanitizeNumeric(v.costPrice);
+        const stockQuantity = sanitizeNumeric(v.stockQuantity, 0);
+        return {
+          productId: product.id,
+          sku: v.sku || '',
+          size: v.size || '',
+          color: v.color || '',
+          price: price,
+          costPrice: costPrice,
+          stockQuantity: stockQuantity,
+        };
+      });
       await ProductVariant.bulkCreate(variantData, { transaction });
     }
     if (data.images && data.images.length > 0) {
@@ -108,36 +123,37 @@ const updateProduct = async (id, data) => {
       }
       return null;
     }
-    // Validate subcategory if provided
-    if (data.subcategoryId) {
-      const subcategoryId = parseInt(data.subcategoryId, 10);
-      const subcategory = await Subcategory.findByPk(subcategoryId);
+    // Validate subcategory if provided - if invalid, set to null
+    let finalSubcategoryId = data.subcategoryId ? parseInt(data.subcategoryId, 10) : null;
+    if (finalSubcategoryId) {
+      const subcategory = await Subcategory.findByPk(finalSubcategoryId);
       if (!subcategory) {
-        throw new Error('Invalid subcategory ID');
-      }
-      // Check if subcategory belongs to the selected category
-      if (data.categoryId) {
+        finalSubcategoryId = null;
+      } else if (data.categoryId) {
         const categoryId = parseInt(data.categoryId, 10);
         if (subcategory.categoryId !== categoryId) {
-          throw new Error('Subcategory does not belong to the selected category');
+          finalSubcategoryId = null;
         }
       }
     }
+    // Sanitize numeric fields
+    const basePrice = sanitizeNumeric(data.price || data.basePrice);
+    const videoLength = sanitizeNumeric(data.videoLength);
     const productData = {
       userId: data.userId,
       name: data.name,
       description: data.description,
-      basePrice: data.price || data.basePrice,
+      basePrice: basePrice,
       defaultSku: data.sku || data.defaultSku,
       categoryId: data.categoryId ? parseInt(data.categoryId, 10) : null,
-      subcategoryId: data.subcategoryId ? parseInt(data.subcategoryId, 10) : null,
+      subcategoryId: finalSubcategoryId,
       videoUrl: data.videoUrl,
       videoKitUrl: data.videoKitUrl || data.videoUrl,
       audioMode: data.audioMode || 'text',
       audioScript: data.audioScript,
       audioLanguage: data.audioLanguage,
       voiceGender: data.voiceGender,
-      videoLength: data.videoLength,
+      videoLength: videoLength,
       customAudioUrl: data.customAudioUrl,
       recordedAudioUrl: data.recordedAudioUrl,
       status: data.status || 'draft',
@@ -151,15 +167,20 @@ const updateProduct = async (id, data) => {
         transaction
       });
       if (data.variants && data.variants.length > 0) {
-        const variantData = data.variants.map(v => ({
-          productId: id,
-          sku: v.sku,
-          size: v.size,
-          color: v.color,
-          price: v.price,
-          costPrice: v.costPrice,
-          stockQuantity: parseInt(v.stockQuantity, 10) || 0,
-        }));
+        const variantData = data.variants.map(v => {
+          const price = sanitizeNumeric(v.price, 0);
+          const costPrice = sanitizeNumeric(v.costPrice);
+          const stockQuantity = sanitizeNumeric(v.stockQuantity, 0);
+          return {
+            productId: id,
+            sku: v.sku || '',
+            size: v.size || '',
+            color: v.color || '',
+            price: price,
+            costPrice: costPrice,
+            stockQuantity: stockQuantity,
+          };
+        });
         await ProductVariant.bulkCreate(variantData, { transaction });
       }
     }
