@@ -46,6 +46,11 @@ const createProduct = async (data) => {
       status: data.status || 'draft',
       cloudinaryVideoPublicId: data.cloudinaryVideoPublicId,
       cloudinaryAudioPublicId: data.cloudinaryAudioPublicId,
+      // New flags: default to false if not provided
+      showInFeaturedProducts: data.showInFeaturedProducts || false,
+      showInBestSellers: data.showInBestSellers || false,
+      showInNewArrivals: data.showInNewArrivals || false,
+      showInPremiumProducts: data.showInPremiumProducts || false,
     };
     const product = await Product.create(productData, { transaction });
     if (data.variants && data.variants.length > 0) {
@@ -159,6 +164,11 @@ const updateProduct = async (id, data) => {
       status: data.status || 'draft',
       cloudinaryVideoPublicId: data.cloudinaryVideoPublicId,
       cloudinaryAudioPublicId: data.cloudinaryAudioPublicId,
+      // New flags: update only if provided, else keep existing
+      showInFeaturedProducts: data.showInFeaturedProducts !== undefined ? data.showInFeaturedProducts : product.showInFeaturedProducts,
+      showInBestSellers: data.showInBestSellers !== undefined ? data.showInBestSellers : product.showInBestSellers,
+      showInNewArrivals: data.showInNewArrivals !== undefined ? data.showInNewArrivals : product.showInNewArrivals,
+      showInPremiumProducts: data.showInPremiumProducts !== undefined ? data.showInPremiumProducts : product.showInPremiumProducts,
     };
     await product.update(productData, { transaction });
     if (data.variants !== undefined) {
