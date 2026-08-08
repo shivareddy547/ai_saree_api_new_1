@@ -48,6 +48,14 @@ module.exports = (sequelize) => {
     basePrice: {
       type: DataTypes.DECIMAL(10,2),
     },
+    costPrice: {
+      type: DataTypes.DECIMAL(10,2),
+      allowNull: true,
+    },
+    stockQuantity: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
     defaultSku: {
       type: DataTypes.STRING,
     },

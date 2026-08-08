@@ -25,12 +25,16 @@ const createProduct = async (data) => {
     }
     // Sanitize numeric fields
     const basePrice = sanitizeNumeric(data.price || data.basePrice);
+    const costPrice = sanitizeNumeric(data.costPrice);
+    const stockQuantity = sanitizeNumeric(data.stockQuantity, 0);
     const videoLength = sanitizeNumeric(data.videoLength);
     const productData = {
       userId: data.userId,
       name: data.name,
       description: data.description,
       basePrice: basePrice,
+      costPrice: costPrice,
+      stockQuantity: stockQuantity,
       defaultSku: data.sku || data.defaultSku,
       categoryId: data.categoryId ? parseInt(data.categoryId, 10) : null,
       subcategoryId: finalSubcategoryId,
@@ -56,29 +60,28 @@ const createProduct = async (data) => {
     // Ensure at least one variant
     let variants = data.variants || [];
     if (variants.length === 0) {
-      // Create a default variant using basePrice and costPrice if provided
-      const costPrice = sanitizeNumeric(data.costPrice);
+      // Create a default variant using basePrice and product-level costPrice/stockQuantity
       variants = [{
         sku: data.sku || data.defaultSku || 'default',
         size: '',
         color: '',
         price: basePrice || 0,
         costPrice: costPrice,
-        stockQuantity: 0,
+        stockQuantity: stockQuantity,
       }];
     }
     const variantData = variants.map(v => {
       const price = sanitizeNumeric(v.price, 0);
-      const costPrice = sanitizeNumeric(v.costPrice);
-      const stockQuantity = sanitizeNumeric(v.stockQuantity, 0);
+      const costPriceVar = sanitizeNumeric(v.costPrice);
+      const stockQuantityVar = sanitizeNumeric(v.stockQuantity, 0);
       return {
         productId: product.id,
         sku: v.sku || '',
         size: v.size || '',
         color: v.color || '',
         price: price,
-        costPrice: costPrice,
-        stockQuantity: stockQuantity,
+        costPrice: costPriceVar,
+        stockQuantity: stockQuantityVar,
       };
     });
     await ProductVariant.bulkCreate(variantData, { transaction });
@@ -154,12 +157,16 @@ const updateProduct = async (id, data) => {
     }
     // Sanitize numeric fields
     const basePrice = sanitizeNumeric(data.price || data.basePrice);
+    const costPrice = sanitizeNumeric(data.costPrice);
+    const stockQuantity = sanitizeNumeric(data.stockQuantity, 0);
     const videoLength = sanitizeNumeric(data.videoLength);
     const productData = {
       userId: data.userId,
       name: data.name,
       description: data.description,
       basePrice: basePrice,
+      costPrice: costPrice,
+      stockQuantity: stockQuantity,
       defaultSku: data.sku || data.defaultSku,
       categoryId: data.categoryId ? parseInt(data.categoryId, 10) : null,
       subcategoryId: finalSubcategoryId,
@@ -188,29 +195,31 @@ const updateProduct = async (id, data) => {
       });
       let variants = data.variants || [];
       if (variants.length === 0) {
-        // Ensure at least one variant using existing basePrice or fallback
+        // Ensure at least one variant using existing product data or fallback
         const currentPrice = product.basePrice || 0;
+        const currentCostPrice = product.costPrice;
+        const currentStock = product.stockQuantity || 0;
         variants = [{
           sku: product.defaultSku || 'default',
           size: '',
           color: '',
           price: currentPrice,
-          costPrice: null,
-          stockQuantity: 0,
+          costPrice: currentCostPrice,
+          stockQuantity: currentStock,
         }];
       }
       const variantData = variants.map(v => {
         const price = sanitizeNumeric(v.price, 0);
-        const costPrice = sanitizeNumeric(v.costPrice);
-        const stockQuantity = sanitizeNumeric(v.stockQuantity, 0);
+        const costPriceVar = sanitizeNumeric(v.costPrice);
+        const stockQuantityVar = sanitizeNumeric(v.stockQuantity, 0);
         return {
           productId: id,
           sku: v.sku || '',
           size: v.size || '',
           color: v.color || '',
           price: price,
-          costPrice: costPrice,
-          stockQuantity: stockQuantity,
+          costPrice: costPriceVar,
+          stockQuantity: stockQuantityVar,
         };
       });
       await ProductVariant.bulkCreate(variantData, { transaction });
