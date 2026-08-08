@@ -53,24 +53,35 @@ const createProduct = async (data) => {
       showInPremiumProducts: data.showInPremiumProducts || false,
     };
     const product = await Product.create(productData, { transaction });
-    if (data.variants && data.variants.length > 0) {
-      const variantData = data.variants.map(v => {
-        // Sanitize numeric fields for variants
-        const price = sanitizeNumeric(v.price, 0); // price is required, default to 0
-        const costPrice = sanitizeNumeric(v.costPrice);
-        const stockQuantity = sanitizeNumeric(v.stockQuantity, 0);
-        return {
-          productId: product.id,
-          sku: v.sku || '',
-          size: v.size || '',
-          color: v.color || '',
-          price: price,
-          costPrice: costPrice,
-          stockQuantity: stockQuantity,
-        };
-      });
-      await ProductVariant.bulkCreate(variantData, { transaction });
+    // Ensure at least one variant
+    let variants = data.variants || [];
+    if (variants.length === 0) {
+      // Create a default variant using basePrice and costPrice if provided
+      const costPrice = sanitizeNumeric(data.costPrice);
+      variants = [{
+        sku: data.sku || data.defaultSku || 'default',
+        size: '',
+        color: '',
+        price: basePrice || 0,
+        costPrice: costPrice,
+        stockQuantity: 0,
+      }];
     }
+    const variantData = variants.map(v => {
+      const price = sanitizeNumeric(v.price, 0);
+      const costPrice = sanitizeNumeric(v.costPrice);
+      const stockQuantity = sanitizeNumeric(v.stockQuantity, 0);
+      return {
+        productId: product.id,
+        sku: v.sku || '',
+        size: v.size || '',
+        color: v.color || '',
+        price: price,
+        costPrice: costPrice,
+        stockQuantity: stockQuantity,
+      };
+    });
+    await ProductVariant.bulkCreate(variantData, { transaction });
     if (data.images && data.images.length > 0) {
       const imageData = data.images.map((url, index) => ({
         productId: product.id,
@@ -164,7 +175,6 @@ const updateProduct = async (id, data) => {
       status: data.status || 'draft',
       cloudinaryVideoPublicId: data.cloudinaryVideoPublicId,
       cloudinaryAudioPublicId: data.cloudinaryAudioPublicId,
-      // New flags: update only if provided, else keep existing
       showInFeaturedProducts: data.showInFeaturedProducts !== undefined ? data.showInFeaturedProducts : product.showInFeaturedProducts,
       showInBestSellers: data.showInBestSellers !== undefined ? data.showInBestSellers : product.showInBestSellers,
       showInNewArrivals: data.showInNewArrivals !== undefined ? data.showInNewArrivals : product.showInNewArrivals,
@@ -176,23 +186,34 @@ const updateProduct = async (id, data) => {
         where: { productId: id },
         transaction
       });
-      if (data.variants && data.variants.length > 0) {
-        const variantData = data.variants.map(v => {
-          const price = sanitizeNumeric(v.price, 0);
-          const costPrice = sanitizeNumeric(v.costPrice);
-          const stockQuantity = sanitizeNumeric(v.stockQuantity, 0);
-          return {
-            productId: id,
-            sku: v.sku || '',
-            size: v.size || '',
-            color: v.color || '',
-            price: price,
-            costPrice: costPrice,
-            stockQuantity: stockQuantity,
-          };
-        });
-        await ProductVariant.bulkCreate(variantData, { transaction });
+      let variants = data.variants || [];
+      if (variants.length === 0) {
+        // Ensure at least one variant using existing basePrice or fallback
+        const currentPrice = product.basePrice || 0;
+        variants = [{
+          sku: product.defaultSku || 'default',
+          size: '',
+          color: '',
+          price: currentPrice,
+          costPrice: null,
+          stockQuantity: 0,
+        }];
       }
+      const variantData = variants.map(v => {
+        const price = sanitizeNumeric(v.price, 0);
+        const costPrice = sanitizeNumeric(v.costPrice);
+        const stockQuantity = sanitizeNumeric(v.stockQuantity, 0);
+        return {
+          productId: id,
+          sku: v.sku || '',
+          size: v.size || '',
+          color: v.color || '',
+          price: price,
+          costPrice: costPrice,
+          stockQuantity: stockQuantity,
+        };
+      });
+      await ProductVariant.bulkCreate(variantData, { transaction });
     }
     if (data.images !== undefined) {
       await ProductImage.destroy({
