@@ -1,4 +1,5 @@
-const { Product, ProductVariant, ProductImage, Category, Subcategory, sequelize } = require('../models');
+const { Product, ProductVariant, ProductImage, Category, Subcategory } = require('../models');
+
 class StoreService {
   async getProducts(filters = {}) {
     const where = {};
@@ -8,6 +9,7 @@ class StoreService {
     if (filters.newArrivals) {
       where.showInNewArrivals = true;
     }
+
     const products = await Product.findAll({
       where,
       include: [
@@ -33,5 +35,31 @@ class StoreService {
     });
     return products;
   }
+
+  async getProductById(id) {
+    const product = await Product.findByPk(id, {
+      include: [
+        {
+          model: ProductVariant,
+          as: 'variants',
+        },
+        {
+          model: ProductImage,
+          as: 'images',
+          order: [['position', 'ASC']],
+        },
+        {
+          model: Category,
+          as: 'category',
+        },
+        {
+          model: Subcategory,
+          as: 'subcategory',
+        },
+      ],
+    });
+    return product;
+  }
 }
+
 module.exports = new StoreService();
