@@ -18,7 +18,6 @@ const allowedOrigins = [
 ];
 const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl)
     if (!origin) return callback(null, true);
     if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
       callback(null, true);
@@ -33,30 +32,17 @@ const corsOptions = {
   optionsSuccessStatus: 200,
   preflightContinue: false
 };
-// Apply CORS middleware - THIS HANDLES BOTH PREFLIGHT AND ACTUAL REQUESTS
 app.use(cors(corsOptions));
-// ==========================================
-// BODY PARSER
-// ==========================================
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-// ==========================================
-// STATIC FILES
-// ==========================================
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-// ==========================================
-// REQUEST LOGGER (for debugging)
-// ==========================================
 app.use((req, res, next) => {
   console.log(`📝 ${req.method} ${req.url}`);
   console.log('  Origin:', req.headers.origin);
   console.log('  Auth:', req.headers.authorization ? 'Present' : 'Missing');
   next();
 });
-// ==========================================
-// HEALTH CHECK
-// ==========================================
 app.get('/health', (req, res) => {
   res.json({
     status: 'OK',
@@ -70,19 +56,18 @@ app.get('/health', (req, res) => {
 // ==========================================
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/help-us', require('./routes/helpUsRoutes'));
-app.use('/api', require('./routes/productRoutes'));
+app.use('/api', require('./routes/productRoutes')); // admin product routes (auth required)
 app.use('/api/instagram', require('./routes/instagramRoutes'));
 app.use('/api/categories', require('./routes/categoryRoutes'));
+// New store, cart, order routes
+app.use('/api/cart', require('./routes/cartRoutes'));
+app.use('/api/orders', require('./routes/orderRoutes'));
+app.use('/api/store', require('./routes/storeRoutes'));
 // ==========================================
 // SWAGGER UI
 // ==========================================
 app.get('/api-docs', (req, res) => {
-  const indexPath = path.join(
-    __dirname,
-    'public',
-    'api-docs',
-    'index.html'
-  );
+  const indexPath = path.join(__dirname, 'public', 'api-docs', 'index.html');
   if (fs.existsSync(indexPath)) {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
@@ -91,24 +76,12 @@ app.get('/api-docs', (req, res) => {
   } else {
     res.status(404).send(`
       <h1>Swagger Documentation Not Found</h1>
-      <p>
-        Please run:
-        <code>npm run swagger:generate</code>
-        to generate documentation.
-      </p>
+      <p>Please run: <code>npm run swagger:generate</code> to generate documentation.</p>
     `);
   }
 });
-// ==========================================
-// SWAGGER JSON
-// ==========================================
 app.get('/api-docs/swagger.json', (req, res) => {
-  const jsonPath = path.join(
-    __dirname,
-    'public',
-    'api-docs',
-    'swagger.json'
-  );
+  const jsonPath = path.join(__dirname, 'public', 'api-docs', 'swagger.json');
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
@@ -122,32 +95,21 @@ app.get('/api-docs/swagger.json', (req, res) => {
     });
   }
 });
-// ==========================================
-// 404 HANDLER FOR API ROUTES
-// ==========================================
 app.use(/^\/api/, (req, res) => {
   res.status(404).json({
     error: 'Not Found',
     message: `Cannot ${req.method} ${req.url}`
   });
 });
-// ==========================================
-// GLOBAL ERROR HANDLER
-// ==========================================
 app.use((err, req, res, next) => {
   console.error('❌ Error:', err.stack);
   res.status(err.status || 500).json({
     error: err.message || 'Internal Server Error',
     message: err.message,
     timestamp: Date.now(),
-    ...(process.env.NODE_ENV === 'development' && {
-      stack: err.stack
-    })
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
   });
 });
-// ==========================================
-// START SERVER
-// ==========================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('='.repeat(60));
