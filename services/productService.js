@@ -7,6 +7,17 @@ const sanitizeNumeric = (value, defaultValue = null) => {
   const num = parseFloat(value);
   return isNaN(num) ? defaultValue : num;
 };
+// Helper to generate video URL from Cloudinary public ID if videoUrl is not set
+const getVideoUrl = (product) => {
+  if (product.videoUrl) return product.videoUrl;
+  if (product.cloudinaryVideoPublicId) {
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    if (cloudName) {
+      return `https://res.cloudinary.com/${cloudName}/video/upload/${product.cloudinaryVideoPublicId}`;
+    }
+  }
+  return null;
+};
 const createProduct = async (data) => {
   const transaction = await sequelize.transaction();
   try {
@@ -102,6 +113,10 @@ const createProduct = async (data) => {
         { model: Subcategory, as: 'subcategory' },
       ],
     });
+    // Ensure videoUrl is set if available from Cloudinary
+    if (fullProduct) {
+      fullProduct.videoUrl = getVideoUrl(fullProduct);
+    }
     return fullProduct;
   } catch (error) {
     if (transaction.finished !== 'commit' && transaction.finished !== 'rollback') {
@@ -111,7 +126,7 @@ const createProduct = async (data) => {
   }
 };
 const getProducts = async (userId) => {
-  return await Product.findAll({
+  const products = await Product.findAll({
     where: { userId },
     include: [
       { model: ProductVariant, as: 'variants' },
@@ -121,9 +136,14 @@ const getProducts = async (userId) => {
     ],
     order: [['createdAt', 'DESC']],
   });
+  // Populate videoUrl for each product
+  products.forEach(product => {
+    product.videoUrl = getVideoUrl(product);
+  });
+  return products;
 };
 const getProduct = async (id) => {
-  return await Product.findByPk(id, {
+  const product = await Product.findByPk(id, {
     include: [
       { model: ProductVariant, as: 'variants' },
       { model: ProductImage, as: 'images' },
@@ -131,6 +151,10 @@ const getProduct = async (id) => {
       { model: Subcategory, as: 'subcategory' },
     ],
   });
+  if (product) {
+    product.videoUrl = getVideoUrl(product);
+  }
+  return product;
 };
 const updateProduct = async (id, data) => {
   const transaction = await sequelize.transaction();
@@ -247,6 +271,9 @@ const updateProduct = async (id, data) => {
         { model: Subcategory, as: 'subcategory' },
       ],
     });
+    if (fullProduct) {
+      fullProduct.videoUrl = getVideoUrl(fullProduct);
+    }
     return fullProduct;
   } catch (error) {
     if (transaction.finished !== 'commit' && transaction.finished !== 'rollback') {
