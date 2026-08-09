@@ -9,16 +9,11 @@ class StoreService {
     if (filters.newArrivals) {
       where.showInNewArrivals = true;
     }
-    // Search by product name or variant SKU
+    // Search by product name or SKU (product-level defaultSku or variant sku)
     if (filters.search) {
       const search = filters.search.trim();
       if (search) {
-        // Use a single query with an OR condition on name and variant SKU
-        // We need to include variants and use a subquery or literal
-        // Approach: Use a subquery to find product IDs that match name or variant SKU,
-        // then filter products by those IDs.
-        // This is more reliable than trying to use include with where on the association
-        // because we need to match any variant.
+        // Find product IDs matching name, defaultSku, or variant sku
         const productIdsByName = await Product.findAll({
           attributes: ['id'],
           where: {
@@ -27,7 +22,15 @@ class StoreService {
           raw: true
         });
         const idsByName = productIdsByName.map(p => p.id);
-        const productIdsBySku = await Product.findAll({
+        const productIdsByDefaultSku = await Product.findAll({
+          attributes: ['id'],
+          where: {
+            defaultSku: { [Op.iLike]: `%${search}%` }
+          },
+          raw: true
+        });
+        const idsByDefaultSku = productIdsByDefaultSku.map(p => p.id);
+        const productIdsByVariantSku = await Product.findAll({
           attributes: ['id'],
           include: [{
             model: ProductVariant,
@@ -39,8 +42,8 @@ class StoreService {
           }],
           raw: true
         });
-        const idsBySku = productIdsBySku.map(p => p.id);
-        const allIds = [...new Set([...idsByName, ...idsBySku])];
+        const idsByVariantSku = productIdsByVariantSku.map(p => p.id);
+        const allIds = [...new Set([...idsByName, ...idsByDefaultSku, ...idsByVariantSku])];
         if (allIds.length === 0) {
           return []; // No matches
         }
@@ -102,7 +105,7 @@ class StoreService {
       return [];
     }
     const search = query.trim();
-    // Similar search logic but only return id, name, and first image
+    // Find product IDs matching name, defaultSku, or variant sku
     const productIdsByName = await Product.findAll({
       attributes: ['id'],
       where: {
@@ -111,7 +114,15 @@ class StoreService {
       raw: true
     });
     const idsByName = productIdsByName.map(p => p.id);
-    const productIdsBySku = await Product.findAll({
+    const productIdsByDefaultSku = await Product.findAll({
+      attributes: ['id'],
+      where: {
+        defaultSku: { [Op.iLike]: `%${search}%` }
+      },
+      raw: true
+    });
+    const idsByDefaultSku = productIdsByDefaultSku.map(p => p.id);
+    const productIdsByVariantSku = await Product.findAll({
       attributes: ['id'],
       include: [{
         model: ProductVariant,
@@ -123,8 +134,8 @@ class StoreService {
       }],
       raw: true
     });
-    const idsBySku = productIdsBySku.map(p => p.id);
-    const allIds = [...new Set([...idsByName, ...idsBySku])];
+    const idsByVariantSku = productIdsByVariantSku.map(p => p.id);
+    const allIds = [...new Set([...idsByName, ...idsByDefaultSku, ...idsByVariantSku])];
     if (allIds.length === 0) {
       return [];
     }
