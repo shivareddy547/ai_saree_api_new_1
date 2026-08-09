@@ -12,10 +12,65 @@ class OrderService {
       }
       let total = 0;
       const orderItemsData = [];
+      const stockErrors = [];
       for (const item of items) {
-        const variant = item.variant;
-        const price = parseFloat(variant.price);
-        const costPrice = variant.costPrice ? parseFloat(variant.costPrice) : null;
+        const product = await Product.findByPk(item.productId, {
+          include: [{ model: ProductVariant, as: 'variants' }],
+          transaction,
+        });
+        if (!product) {
+          stockErrors.push(`Product not found: ${item.product?.name || 'Unknown'}`);
+          continue;
+        }
+        // Determine if product has "real" variants (more than one, or one with size/color)
+        const variants = product.variants || [];
+        const hasRealVariants = variants.length > 1 || (variants.length === 1 && (variants[0].size || variants[0].color));
+        let availableStock;
+        let stockSource; // either variant or product
+        if (hasRealVariants) {
+          // Find the specific variant
+          const variant = variants.find(v => v.id === item.variantId);
+          if (!variant) {
+            stockErrors.push(`Variant not found for product: ${product.name}`);
+            continue;
+          }
+          availableStock = variant.stockQuantity || 0;
+          stockSource = variant;
+        } else {
+          // No real variants: use product-level stock
+          availableStock = product.stockQuantity || 0;
+          stockSource = product;
+        }
+        if (availableStock < item.quantity) {
+          const productName = product.name || 'Product';
+          let variantInfo = '';
+          if (hasRealVariants) {
+            const variant = stockSource;
+            const color = variant.color || '';
+            const size = variant.size || '';
+            variantInfo = color && size ? ` (${color}, ${size})` : color || size ? ` (${color || size})` : '';
+          }
+          stockErrors.push(
+            `"${productName}"${variantInfo} - available: ${availableStock}, requested: ${item.quantity}`
+          );
+          continue;
+        }
+        // Deduct stock
+        if (hasRealVariants) {
+          const variant = stockSource;
+          variant.stockQuantity = availableStock - item.quantity;
+          await variant.save({ transaction });
+        } else {
+          product.stockQuantity = availableStock - item.quantity;
+          await product.save({ transaction });
+        }
+        // Determine price for order item
+        const price = hasRealVariants
+          ? parseFloat(stockSource.price)
+          : parseFloat(product.basePrice || 0);
+        const costPrice = hasRealVariants
+          ? (stockSource.costPrice ? parseFloat(stockSource.costPrice) : null)
+          : (product.costPrice ? parseFloat(product.costPrice) : null);
         const itemTotal = price * item.quantity;
         total += itemTotal;
         orderItemsData.push({
@@ -25,6 +80,12 @@ class OrderService {
           price: price,
           costPrice: costPrice,
         });
+      }
+      if (stockErrors.length > 0) {
+        const errorMessage = `Insufficient stock for the following items:\n${stockErrors.join('\n')}\nPlease remove these items from your cart and try again.`;
+        const err = new Error(errorMessage);
+        err.status = 400;
+        throw err;
       }
       const order = await Order.create({
         userId,
