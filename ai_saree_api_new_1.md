@@ -8,10 +8,10 @@
 
 ## API Integration (Code Analysis)
 - API Libraries Found:
-  - None
+  - axios
 - Usage Patterns Detected:
-  - None
+  - axios calls
 - Sample File Containing API Calls:
-  - None
+  - src/pages/CreateProduct.tsx
 
 ## Other Libraries
