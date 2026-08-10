@@ -25,22 +25,12 @@ module.exports = {
       categoryId: {
         type: Sequelize.STRING,
         allowNull: true,
-        references: {
-          model: 'categories',
-          key: 'id',
-        },
-        onUpdate: 'CASCADE',
-        onDelete: 'SET NULL',
+        // references removed – will be added later by fix migration
       },
       subcategoryId: {
         type: Sequelize.STRING,
         allowNull: true,
-        references: {
-          model: 'subcategories',
-          key: 'id',
-        },
-        onUpdate: 'CASCADE',
-        onDelete: 'SET NULL',
+        // references removed – will be added later by fix migration
       },
       videoUrl: {
         type: Sequelize.STRING,
