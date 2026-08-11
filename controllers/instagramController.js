@@ -74,7 +74,7 @@ exports.disconnectInstagram = async (req, res, next) => {
   }
 };
 /**
- * Post a video to Instagram Reels
+ * Post a video to Instagram (Reels or Feed)
  */
 exports.postToInstagram = async (req, res, next) => {
   try {
@@ -91,18 +91,33 @@ exports.postToInstagram = async (req, res, next) => {
       err.status = 400;
       throw err;
     }
+    // Validate media_type: only REELS and VIDEO are supported
+    if (media_type !== 'REELS' && media_type !== 'VIDEO') {
+      const err = new Error('media_type must be either "REELS" or "VIDEO"');
+      err.status = 400;
+      throw err;
+    }
     const result = await instagramService.postReel(userId, video_url, media_type, caption);
     res.status(200).json({
       success: true,
       data: {
         media_id: result.media_id,
         publish_id: result.publish_id,
-        video_url: video_url
+        video_url: video_url,
+        media_type: media_type
       },
-      message: 'Video posted to Instagram successfully'
+      message: `Video posted to Instagram as ${media_type} successfully`
     });
   } catch (error) {
     console.error('Instagram post error:', error);
-    next(error);
+    // Send more detailed error to client
+    const status = error.status || 500;
+    const message = error.message || 'Failed to post video to Instagram';
+    res.status(status).json({
+      success: false,
+      error: message,
+      message: message,
+      timestamp: Date.now()
+    });
   }
 };

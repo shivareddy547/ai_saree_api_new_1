@@ -234,13 +234,14 @@ const getUserAccessToken = async (userId) => {
   };
 };
 /**
- * Post a video reel to Instagram
+ * Post a video to Instagram (Reels or Feed)
  */
 exports.postReel = async (userId, videoUrl, mediaType = 'REELS', caption = '') => {
   try {
     const { accessToken, accountId } = await getUserAccessToken(userId);
     console.log('Posting to Instagram:', { accountId, videoUrl, mediaType, caption });
     // Step 1: Create media container - access_token goes in params
+    console.log('Attempting to create media container...');
     const createMediaResponse = await axios.post(
       `${INSTAGRAM_API_BASE}/${accountId}/media`,
       {
@@ -251,37 +252,61 @@ exports.postReel = async (userId, videoUrl, mediaType = 'REELS', caption = '') =
       {
         params: {
           access_token: accessToken
-        }
+        },
+        timeout: 30000 // 30 seconds timeout
       }
     );
+    console.log('Create media response status:', createMediaResponse.status);
+    console.log('Create media response data:', JSON.stringify(createMediaResponse.data, null, 2));
+    // Check for error in response
+    if (createMediaResponse.data.error) {
+      const errMsg = createMediaResponse.data.error.message || 'Instagram API error';
+      console.error('Instagram API returned error:', errMsg);
+      throw new Error(`Instagram API error: ${errMsg}`);
+    }
     const mediaId = createMediaResponse.data.id;
     if (!mediaId) {
-      throw new Error('Failed to create media container: No ID returned');
+      console.error('No media ID returned. Full response:', createMediaResponse.data);
+      throw new Error('Instagram API error: Media ID is not available - ' + JSON.stringify(createMediaResponse.data));
     }
-    console.log('Instagram media container created:', mediaId);
+    console.log('Instagram media container created with ID:', mediaId);
     // Wait for video to be processed
     console.log('Waiting for video processing...');
     let attempts = 0;
     let isReady = false;
-    while (attempts < 15) {
+    let lastStatus = 'unknown';
+    while (attempts < 25) { // Increased attempts to 25 (75 seconds)
       await new Promise(resolve => setTimeout(resolve, 3000));
       try {
         const statusResponse = await axios.get(
           `${INSTAGRAM_API_BASE}/${mediaId}`,
           {
             params: {
-              fields: 'status_code',
+              fields: 'status_code,status',
               access_token: accessToken
             }
           }
         );
-        const status = statusResponse.data.status_code;
+        const status = statusResponse.data.status_code || statusResponse.data.status;
+        lastStatus = status;
         console.log(`Video status (attempt ${attempts + 1}):`, status);
         if (status === 'FINISHED' || status === 'PUBLISHED') {
           isReady = true;
           break;
         } else if (status === 'ERROR') {
-          throw new Error('Video processing failed');
+          // Get error details
+          const errorResponse = await axios.get(
+            `${INSTAGRAM_API_BASE}/${mediaId}`,
+            {
+              params: {
+                fields: 'error',
+                access_token: accessToken
+              }
+            }
+          );
+          const errorMsg = errorResponse.data.error?.message || 'Video processing failed';
+          console.error('Video processing error:', errorMsg);
+          throw new Error(`Instagram video processing error: ${errorMsg}`);
         }
       } catch (statusErr) {
         console.log('Status check error, retrying:', statusErr.message);
@@ -289,9 +314,10 @@ exports.postReel = async (userId, videoUrl, mediaType = 'REELS', caption = '') =
       attempts++;
     }
     if (!isReady) {
-      console.log('⚠️ Video may not be fully processed, but attempting to publish anyway...');
+      console.warn(`⚠️ Video not ready after ${attempts} attempts. Last status: ${lastStatus}. Attempting to publish anyway...`);
     }
     // Step 2: Publish the media - access_token goes in params
+    console.log('Attempting to publish media...');
     const publishResponse = await axios.post(
       `${INSTAGRAM_API_BASE}/${accountId}/media_publish`,
       {
@@ -300,25 +326,35 @@ exports.postReel = async (userId, videoUrl, mediaType = 'REELS', caption = '') =
       {
         params: {
           access_token: accessToken
-        }
+        },
+        timeout: 30000
       }
     );
+    console.log('Publish response data:', JSON.stringify(publishResponse.data, null, 2));
+    if (publishResponse.data.error) {
+      const errMsg = publishResponse.data.error.message || 'Instagram API error';
+      console.error('Publish API error:', errMsg);
+      throw new Error(`Instagram API error: ${errMsg}`);
+    }
     const publishId = publishResponse.data.id;
     if (!publishId) {
-      throw new Error('Failed to publish media: No ID returned');
+      console.error('No publish ID returned. Full response:', publishResponse.data);
+      throw new Error('Instagram API error: Publish ID not available - ' + JSON.stringify(publishResponse.data));
     }
-    console.log('Instagram video published:', publishId);
+    console.log('Instagram video published successfully with ID:', publishId);
     return {
       media_id: mediaId,
       publish_id: publishId
     };
   } catch (error) {
-    console.error('Instagram post error:', error.response?.data || error.message);
+    console.error('Instagram post error:', error.message);
     if (error.response) {
+      console.error('Error response data:', JSON.stringify(error.response.data, null, 2));
+      console.error('Error response status:', error.response.status);
       const errorMessage = error.response.data?.error?.message || 
                          error.response.data?.message || 
                          'Instagram API error';
-      throw new Error(`Instagram API error: ${errorMessage}`);
+      throw new Error(`Instagram API error: ${errorMessage} (Status: ${error.response.status})`);
     }
     throw error;
   }
