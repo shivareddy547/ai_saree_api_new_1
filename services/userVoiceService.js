@@ -1,6 +1,5 @@
 const { UserVoice } = require('../models');
 const gtts = require('gtts');
-const { PassThrough } = require('stream');
 class UserVoiceService {
   async getVoicesByUserId(userId) {
     try {
@@ -67,12 +66,10 @@ class UserVoiceService {
       throw new Error('Failed to delete voice');
     }
   }
-  // Generate cloned audio using Google TTS (gtts) for speech synthesis
+  // Generate speech using gtts with the given text and language
+  // Note: The voiceId is passed but actual voice cloning requires a third-party API.
+  // For now, we use gtts for text-to-speech as a placeholder.
   async generateClonedAudio(voiceId, userId, language, text) {
-    // In a real implementation, this would call a voice cloning API.
-    // For now, we use gtts to generate speech in the requested language.
-    // The voiceId is ignored because we don't have actual voice cloning.
-    // We still use the provided text and language.
     try {
       // Map language codes to gtts language codes
       const langMap = {
@@ -81,7 +78,7 @@ class UserVoiceService {
         'te': 'te',
       };
       const lang = langMap[language] || 'en';
-      // Generate speech using gtts
+      // Create gtts instance
       const speech = new gtts(text, lang);
       // Get audio as buffer
       const audioBuffer = await new Promise((resolve, reject) => {
@@ -91,12 +88,12 @@ class UserVoiceService {
         stream.on('end', () => resolve(Buffer.concat(chunks)));
         stream.on('error', (err) => reject(err));
       });
-      // Return as blob (buffer)
+      // Return as blob (MP3)
       const blob = new Blob([audioBuffer], { type: 'audio/mpeg' });
       return blob;
     } catch (error) {
       console.error('Error generating speech with gtts:', error);
-      // Fallback to simple beep if gtts fails
+      // Fallback to a simple beep if gtts fails
       const { generateFallbackAudio } = require('../utils/audioUtils');
       const blob = await generateFallbackAudio(30, 440);
       return blob;
