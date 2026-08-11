@@ -1,0 +1,10 @@
+const express = require('express');
+const router = express.Router();
+const authMiddleware = require('../middleware/authMiddleware');
+const { controller, upload } = require('../controllers/userVoiceController');
+router.use(authMiddleware);
+router.get('/', controller.getVoices.bind(controller));
+router.post('/', upload, controller.createVoice.bind(controller));
+router.delete('/:id', controller.deleteVoice.bind(controller));
+router.post('/generate', controller.generateClonedAudio.bind(controller));
+module.exports = router;

@@ -74,7 +74,7 @@ module.exports = (sequelize) => {
       type: DataTypes.STRING,
     },
     audioMode: {
-      type: DataTypes.ENUM('text', 'upload', 'record'),
+      type: DataTypes.ENUM('text', 'upload', 'record', 'clone'),
       defaultValue: 'text',
     },
     audioScript: {
