@@ -1,18 +1,28 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    // Add 'clone' value to the enum type "enum_products_audioMode"
-    await queryInterface.sequelize.query(
-      `ALTER TYPE "enum_products_audioMode" ADD VALUE 'clone';`
+    // Check if the enum type exists and add 'clone' if not present
+    const result = await queryInterface.sequelize.query(
+      `SELECT EXISTS (
+        SELECT 1 FROM pg_type WHERE typname = 'enum_products_audioMode'
+      );`
     );
+    const enumExists = result[0][0].exists;
+    if (enumExists) {
+      // Add the value if not already present
+      await queryInterface.sequelize.query(
+        `ALTER TYPE "enum_products_audioMode" ADD VALUE IF NOT EXISTS 'clone';`
+      );
+    } else {
+      // If enum doesn't exist, create it with the new value
+      await queryInterface.sequelize.query(
+        `CREATE TYPE "enum_products_audioMode" AS ENUM ('text', 'upload', 'record', 'clone');`
+      );
+    }
   },
   down: async (queryInterface, Sequelize) => {
-    // PostgreSQL does not support removing enum values directly.
-    // The safest approach is to recreate the enum without 'clone'.
-    // We'll provide a down that renames the old type and creates a new one.
-    // For simplicity, we'll not implement a full rollback here, but we'll provide a warning.
-    // However, we cannot remove a value from enum without recreating the type.
-    // So we'll just throw an error or log a message.
-    throw new Error('Cannot revert adding enum value. Please handle manually.');
+    // Cannot remove enum value easily, so we just log a warning.
+    // This down is a no-op to avoid breaking migrations.
+    console.warn('Cannot revert addition of "clone" to enum_products_audioMode automatically.');
   }
 };

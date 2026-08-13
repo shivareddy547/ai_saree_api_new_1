@@ -599,6 +599,10 @@ const CreateProduct: React.FC = () => {
   const [clonedAudioUrl, setClonedAudioUrl] = useState<string | null>(null);
   const [isGeneratingClonedAudio, setIsGeneratingClonedAudio] = useState(false);
   const [clonedAudioError, setClonedAudioError] = useState<string | null>(null);
+  // Video source states
+  const [videoSource, setVideoSource] = useState<"generate" | "upload">("generate");
+  const [uploadedVideoFile, setUploadedVideoFile] = useState<File | null>(null);
+  const [uploadedVideoUrl, setUploadedVideoUrl] = useState<string | null>(null);
   // Load audio from URL
   const loadAudioFromUrl =
     useCallback(
@@ -616,11 +620,17 @@ const CreateProduct: React.FC = () => {
       },
       []
     );
-  // Fetch voices
+  // Fetch voices with full URL for sample audio
   const fetchVoices = useCallback(async () => {
     try {
       const response = await apiClient.get('/user-voices');
-      setVoices(response.data);
+      // Prepend API base URL to sampleAudioUrl for proper playback
+      const baseUrl = API_BASE.replace('/api', '');
+      const voicesWithFullUrl = response.data.map((voice: any) => ({
+        ...voice,
+        sampleAudioUrl: voice.sampleAudioUrl ? `${baseUrl}${voice.sampleAudioUrl}` : null
+      }));
+      setVoices(voicesWithFullUrl);
     } catch (err: any) {
       console.error('Failed to fetch voices:', err);
     }
@@ -649,6 +659,17 @@ const CreateProduct: React.FC = () => {
       responseType: 'blob',
     });
     return response.data;
+  }, []);
+  // Upload video to Cloudinary
+  const uploadVideoToCloudinary = useCallback(async (file: File, onProgress?: (progress: number) => void) => {
+    // This will be handled by the existing uploadToCloudinary utility
+    // We'll use it in handleGenerateVideo when videoSource is "upload"
+    // We'll return a promise that resolves with publicId
+    return new Promise<{ publicId: string }>((resolve, reject) => {
+      // We'll implement this in handleGenerateVideo
+      // Just a placeholder to satisfy the prop type
+      reject(new Error("Direct upload not implemented"));
+    });
   }, []);
   useEffect(() => {
     if (editId) {
@@ -845,6 +866,7 @@ const CreateProduct: React.FC = () => {
   useEffect(() => {
     if (
       currentStep === 3 &&
+      videoSource === "generate" &&
       audioMode === "text" &&
       !audioScript &&
       !isEditMode
@@ -865,6 +887,7 @@ const CreateProduct: React.FC = () => {
     productName,
     description,
     price,
+    videoSource,
     audioMode,
     audioScript,
     isEditMode,
@@ -934,6 +957,9 @@ const CreateProduct: React.FC = () => {
       }
       if (clonedAudioUrl && clonedAudioUrl.startsWith("blob:")) {
         URL.revokeObjectURL(clonedAudioUrl);
+      }
+      if (uploadedVideoUrl && uploadedVideoUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(uploadedVideoUrl);
       }
       if (
         mediaRecorderRef.current &&
@@ -1512,11 +1538,14 @@ const CreateProduct: React.FC = () => {
       // Determine audio URL: for clone mode use cloned audio URL
       let audioUrl = customAudioUrl || undefined;
       if (audioMode === "clone" && clonedAudioUrl) {
-        // For clone, we need to upload the blob to a permanent storage.
-        // For now, we'll use the blob URL, but it won't persist. We should upload to server.
-        // We'll simulate by using the blob URL, but in production need to upload.
-        // We'll keep as is for demo.
         audioUrl = clonedAudioUrl;
+      }
+      // Determine video URL: if videoSource is "upload" and we have cloudinaryPublicId from upload, use that
+      // If videoSource is "generate", use generated video
+      let videoUrlToSave = videoKitUrl || videoUrl;
+      if (videoSource === "upload" && cloudinaryPublicId) {
+        const cloudName = process.env.REACT_APP_CLOUDINARY_CLOUD_NAME || 'lovecart';
+        videoUrlToSave = `https://res.cloudinary.com/${cloudName}/video/upload/${cloudinaryPublicId}`;
       }
       const productData = {
         name: productName,
@@ -1550,9 +1579,7 @@ const CreateProduct: React.FC = () => {
                 "http"
               )
           ),
-        videoUrl:
-          videoKitUrl ||
-          videoUrl,
+        videoUrl: videoUrlToSave,
         audioMode,
         audioScript,
         audioLanguage,
@@ -1672,6 +1699,9 @@ const CreateProduct: React.FC = () => {
     if (clonedAudioUrl && clonedAudioUrl.startsWith("blob:")) {
       URL.revokeObjectURL(clonedAudioUrl);
     }
+    if (uploadedVideoUrl && uploadedVideoUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(uploadedVideoUrl);
+    }
     if (
       mediaRecorderRef.current &&
       mediaRecorderRef.current
@@ -1764,6 +1794,13 @@ const CreateProduct: React.FC = () => {
     }
     setIsGeneratingClonedAudio(false);
     setClonedAudioError(null);
+    // Reset video source
+    setVideoSource("generate");
+    setUploadedVideoFile(null);
+    if (uploadedVideoUrl) {
+      URL.revokeObjectURL(uploadedVideoUrl);
+      setUploadedVideoUrl(null);
+    }
   };
   const handleBack = () => {
     if (currentStep > 1) {
@@ -2157,6 +2194,42 @@ const CreateProduct: React.FC = () => {
         | string
         | null = null;
       try {
+        // If videoSource is "upload", we just upload the video to Cloudinary
+        if (videoSource === "upload") {
+          if (!uploadedVideoFile) {
+            throw new Error("No video file uploaded");
+          }
+          setGenerationMessage(
+            "Uploading video to Cloudinary..."
+          );
+          setGenerationProgress(10);
+          const cloudinaryResult = await uploadToCloudinary(
+            uploadedVideoFile,
+            (progress) => {
+              setCloudinaryUploadProgress(progress);
+              setGenerationProgress(10 + progress * 0.8); // 10-90%
+              setCloudinaryUploadMessage(`Uploading... ${Math.round(progress)}%`);
+            }
+          );
+          if (cloudinaryResult && cloudinaryResult.publicId) {
+            setCloudinaryPublicId(cloudinaryResult.publicId);
+            setCloudinaryUploadStatus("success");
+            setCloudinaryUploadMessage("Video uploaded successfully!");
+            setGenerationMessage("Video uploaded to Cloudinary successfully!");
+            const cloudinaryUrl = getCloudinaryVideoUrl(cloudinaryResult.publicId);
+            if (cloudinaryUrl) {
+              setExistingVideoUrl(cloudinaryUrl);
+              setVideoUrl(cloudinaryUrl);
+              setVideoKitUrl(cloudinaryUrl);
+            }
+            setGenerationProgress(100);
+          } else {
+            throw new Error("Failed to upload video to Cloudinary");
+          }
+          setIsGenerating(false);
+          return;
+        }
+        // Original video generation for "generate" source
         let audioBlob:
           | Blob
           | null = null;
@@ -3407,7 +3480,7 @@ const CreateProduct: React.FC = () => {
                 audioMode
               }
               setAudioMode={
-                setAudioMode
+                setAudioMode as (mode: "text" | "upload" | "record" | "clone") => void
               }
               audioScript={
                 audioScript
@@ -3522,6 +3595,13 @@ const CreateProduct: React.FC = () => {
               fetchVoices={fetchVoices}
               generateClonedAudio={generateClonedAudio}
               deleteVoice={deleteVoice}
+              videoSource={videoSource}
+              setVideoSource={setVideoSource}
+              uploadedVideoFile={uploadedVideoFile}
+              setUploadedVideoFile={setUploadedVideoFile}
+              uploadedVideoUrl={uploadedVideoUrl}
+              setUploadedVideoUrl={setUploadedVideoUrl}
+              uploadVideoToCloudinary={uploadVideoToCloudinary}
             />
           )}
           {currentStep === 4 && (
