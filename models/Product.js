@@ -14,7 +14,8 @@ module.exports = (sequelize) => {
         foreignKey: 'categoryId',
         as: 'category'
       });
-      Product.belongsTo(models.Subcategory, {
+      // Subcategory is also a Category (with parentId not null)
+      Product.belongsTo(models.Category, {
         foreignKey: 'subcategoryId',
         as: 'subcategory'
       });
@@ -111,7 +112,6 @@ module.exports = (sequelize) => {
       type: DataTypes.STRING,
       allowNull: true,
     },
-    // New flag fields
     showInFeaturedProducts: {
       type: DataTypes.BOOLEAN,
       allowNull: false,

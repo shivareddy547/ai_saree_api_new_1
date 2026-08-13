@@ -1,4 +1,5 @@
-const { Product, ProductVariant, ProductImage, Category, Subcategory, sequelize } = require('../models');
+const { Product, ProductVariant, ProductImage, Category, sequelize } = require('../models');
+const { Op } = require('sequelize');
 // Helper to sanitize numeric fields: convert empty string to null (or 0 for required fields)
 const sanitizeNumeric = (value, defaultValue = null) => {
   if (value === undefined || value === null || value === '') {
@@ -21,15 +22,24 @@ const getVideoUrl = (product) => {
 const createProduct = async (data) => {
   const transaction = await sequelize.transaction();
   try {
-    // Validate subcategory if provided - if invalid, set to null
+    // Validate subcategory if provided - must be a category with parentId not null
     let finalSubcategoryId = data.subcategoryId ? parseInt(data.subcategoryId, 10) : null;
     if (finalSubcategoryId) {
-      const subcategory = await Subcategory.findByPk(finalSubcategoryId);
+      const subcategory = await Category.findOne({
+        where: {
+          id: finalSubcategoryId,
+          parentId: { [Op.ne]: null }
+        }
+      });
       if (!subcategory) {
+        console.warn(`Subcategory (category with parentId) with id ${finalSubcategoryId} not found. Setting to null.`);
         finalSubcategoryId = null;
-      } else if (data.categoryId) {
+      }
+      // Optionally verify it belongs to the selected category
+      if (finalSubcategoryId && data.categoryId) {
         const categoryId = parseInt(data.categoryId, 10);
-        if (subcategory.categoryId !== categoryId) {
+        if (subcategory.parentId !== categoryId) {
+          console.warn(`Subcategory ${finalSubcategoryId} does not belong to category ${categoryId}. Setting to null.`);
           finalSubcategoryId = null;
         }
       }
@@ -61,7 +71,6 @@ const createProduct = async (data) => {
       status: data.status || 'draft',
       cloudinaryVideoPublicId: data.cloudinaryVideoPublicId,
       cloudinaryAudioPublicId: data.cloudinaryAudioPublicId,
-      // New flags: default to false if not provided
       showInFeaturedProducts: data.showInFeaturedProducts || false,
       showInBestSellers: data.showInBestSellers || false,
       showInNewArrivals: data.showInNewArrivals || false,
@@ -71,7 +80,6 @@ const createProduct = async (data) => {
     // Ensure at least one variant
     let variants = data.variants || [];
     if (variants.length === 0) {
-      // Create a default variant using basePrice and product-level costPrice/stockQuantity
       variants = [{
         sku: data.sku || data.defaultSku || 'default',
         size: '',
@@ -110,10 +118,9 @@ const createProduct = async (data) => {
         { model: ProductVariant, as: 'variants' },
         { model: ProductImage, as: 'images' },
         { model: Category, as: 'category' },
-        { model: Subcategory, as: 'subcategory' },
+        { model: Category, as: 'subcategory' },
       ],
     });
-    // Ensure videoUrl is set if available from Cloudinary
     if (fullProduct) {
       fullProduct.videoUrl = getVideoUrl(fullProduct);
     }
@@ -132,11 +139,10 @@ const getProducts = async (userId) => {
       { model: ProductVariant, as: 'variants' },
       { model: ProductImage, as: 'images' },
       { model: Category, as: 'category' },
-      { model: Subcategory, as: 'subcategory' },
+      { model: Category, as: 'subcategory' },
     ],
     order: [['createdAt', 'DESC']],
   });
-  // Populate videoUrl for each product
   products.forEach(product => {
     product.videoUrl = getVideoUrl(product);
   });
@@ -148,7 +154,7 @@ const getProduct = async (id) => {
       { model: ProductVariant, as: 'variants' },
       { model: ProductImage, as: 'images' },
       { model: Category, as: 'category' },
-      { model: Subcategory, as: 'subcategory' },
+      { model: Category, as: 'subcategory' },
     ],
   });
   if (product) {
@@ -166,20 +172,27 @@ const updateProduct = async (id, data) => {
       }
       return null;
     }
-    // Validate subcategory if provided - if invalid, set to null
+    // Validate subcategory if provided - must be a category with parentId not null
     let finalSubcategoryId = data.subcategoryId ? parseInt(data.subcategoryId, 10) : null;
     if (finalSubcategoryId) {
-      const subcategory = await Subcategory.findByPk(finalSubcategoryId);
+      const subcategory = await Category.findOne({
+        where: {
+          id: finalSubcategoryId,
+          parentId: { [Op.ne]: null }
+        }
+      });
       if (!subcategory) {
+        console.warn(`Subcategory (category with parentId) with id ${finalSubcategoryId} not found. Setting to null.`);
         finalSubcategoryId = null;
-      } else if (data.categoryId) {
+      }
+      if (finalSubcategoryId && data.categoryId) {
         const categoryId = parseInt(data.categoryId, 10);
-        if (subcategory.categoryId !== categoryId) {
+        if (subcategory.parentId !== categoryId) {
+          console.warn(`Subcategory ${finalSubcategoryId} does not belong to category ${categoryId}. Setting to null.`);
           finalSubcategoryId = null;
         }
       }
     }
-    // Sanitize numeric fields
     const basePrice = sanitizeNumeric(data.price || data.basePrice);
     const costPrice = sanitizeNumeric(data.costPrice);
     const stockQuantity = sanitizeNumeric(data.stockQuantity, 0);
@@ -219,7 +232,6 @@ const updateProduct = async (id, data) => {
       });
       let variants = data.variants || [];
       if (variants.length === 0) {
-        // Ensure at least one variant using existing product data or fallback
         const currentPrice = product.basePrice || 0;
         const currentCostPrice = product.costPrice;
         const currentStock = product.stockQuantity || 0;
@@ -268,7 +280,7 @@ const updateProduct = async (id, data) => {
         { model: ProductVariant, as: 'variants' },
         { model: ProductImage, as: 'images' },
         { model: Category, as: 'category' },
-        { model: Subcategory, as: 'subcategory' },
+        { model: Category, as: 'subcategory' },
       ],
     });
     if (fullProduct) {
