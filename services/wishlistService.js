@@ -1,5 +1,4 @@
-const { WishlistItem, Product, ProductImage } = require('../models');
-const { Op } = require('sequelize');
+const { WishlistItem, Product, ProductVariant, ProductImage } = require('../models');
 class WishlistService {
   async toggle(userId, productId) {
     const existing = await WishlistItem.findOne({ where: { userId, productId } });
@@ -14,7 +13,7 @@ class WishlistService {
     }
   }
   async getWishlist(userId) {
-    const items = await WishlistItem.findAll({
+    const wishlistItems = await WishlistItem.findAll({
       where: { userId },
       include: [
         {
@@ -22,17 +21,20 @@ class WishlistService {
           as: 'product',
           include: [
             {
+              model: ProductVariant,
+              as: 'variants',
+            },
+            {
               model: ProductImage,
               as: 'images',
-              limit: 1,
-              attributes: ['url'],
+              order: [['position', 'ASC']],
             },
           ],
         },
       ],
       order: [['createdAt', 'DESC']],
     });
-    return items.map((item) => item.product);
+    return wishlistItems.map(item => item.product);
   }
   async getCount(userId) {
     return await WishlistItem.count({ where: { userId } });
