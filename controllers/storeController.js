@@ -3,11 +3,25 @@ const wishlistService = require('../services/wishlistService');
 class StoreController {
   async getProducts(req, res, next) {
     try {
-      const { featured, newArrivals, search } = req.query;
+      const {
+        featured,
+        newArrivals,
+        search,
+        categoryId,
+        subcategoryId,
+        minPrice,
+        maxPrice,
+        sortBy
+      } = req.query;
       const filters = {};
       if (featured === 'true') filters.featured = true;
       if (newArrivals === 'true') filters.newArrivals = true;
       if (search) filters.search = search;
+      if (categoryId) filters.categoryId = categoryId;
+      if (subcategoryId) filters.subcategoryId = subcategoryId;
+      if (minPrice !== undefined && minPrice !== '') filters.minPrice = minPrice;
+      if (maxPrice !== undefined && maxPrice !== '') filters.maxPrice = maxPrice;
+      if (sortBy) filters.sortBy = sortBy;
       const products = await storeService.getProducts(filters);
       res.status(200).json({ success: true, data: products });
     } catch (error) {
