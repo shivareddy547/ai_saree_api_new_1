@@ -1,4 +1,4 @@
-const { Product, ProductVariant, ProductImage, Category, Subcategory, sequelize } = require('../models');
+const { Product, ProductVariant, ProductImage, Category, sequelize } = require('../models');
 const { Op } = require('sequelize');
 class StoreService {
   async getProducts(filters = {}) {
@@ -67,7 +67,7 @@ class StoreService {
           as: 'category',
         },
         {
-          model: Subcategory,
+          model: Category,
           as: 'subcategory',
         },
       ],
@@ -92,7 +92,7 @@ class StoreService {
           as: 'category',
         },
         {
-          model: Subcategory,
+          model: Category,
           as: 'subcategory',
         },
       ],
