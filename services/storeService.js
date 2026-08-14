@@ -9,6 +9,12 @@ class StoreService {
     if (filters.newArrivals) {
       where.showInNewArrivals = true;
     }
+    if (filters.bestSellers) {
+      where.showInBestSellers = true;
+    }
+    if (filters.premiumProducts) {
+      where.showInPremiumProducts = true;
+    }
     if (filters.categoryId) {
       where.categoryId = parseInt(filters.categoryId, 10);
     }

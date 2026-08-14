@@ -6,6 +6,8 @@ class StoreController {
       const {
         featured,
         newArrivals,
+        bestSellers,
+        premiumProducts,
         search,
         categoryId,
         subcategoryId,
@@ -16,6 +18,8 @@ class StoreController {
       const filters = {};
       if (featured === 'true') filters.featured = true;
       if (newArrivals === 'true') filters.newArrivals = true;
+      if (bestSellers === 'true') filters.bestSellers = true;
+      if (premiumProducts === 'true') filters.premiumProducts = true;
       if (search) filters.search = search;
       if (categoryId) filters.categoryId = categoryId;
       if (subcategoryId) filters.subcategoryId = subcategoryId;
