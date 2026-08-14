@@ -1,11 +1,14 @@
 const { Model, DataTypes } = require('sequelize');
-
 module.exports = (sequelize) => {
   class ProductImage extends Model {
     static associate(models) {
       ProductImage.belongsTo(models.Product, {
         foreignKey: 'productId',
         as: 'product'
+      });
+      ProductImage.belongsTo(models.ProductVariant, {
+        foreignKey: 'variantId',
+        as: 'variant'
       });
     }
   }
@@ -20,6 +23,14 @@ module.exports = (sequelize) => {
       allowNull: false,
       references: {
         model: 'products',
+        key: 'id',
+      },
+    },
+    variantId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      references: {
+        model: 'product_variants',
         key: 'id',
       },
     },
