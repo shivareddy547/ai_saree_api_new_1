@@ -1,5 +1,4 @@
 const { Model, DataTypes } = require('sequelize');
-
 module.exports = (sequelize) => {
   class ProductVariant extends Model {
     static associate(models) {
@@ -43,6 +42,14 @@ module.exports = (sequelize) => {
     stockQuantity: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
+    },
+    videoUrl: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    cloudinaryVideoPublicId: {
+      type: DataTypes.STRING,
+      allowNull: true,
     },
   }, {
     sequelize,

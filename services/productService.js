@@ -101,6 +101,8 @@ const createProduct = async (data) => {
         price: price,
         costPrice: costPriceVar,
         stockQuantity: stockQuantityVar,
+        videoUrl: v.videoUrl || null,
+        cloudinaryVideoPublicId: v.cloudinaryVideoPublicId || null,
       };
     });
     const createdVariants = await ProductVariant.bulkCreate(variantData, { transaction, returning: true });
@@ -114,7 +116,6 @@ const createProduct = async (data) => {
           variantId = img.variantId || null;
           position = (img.position !== undefined) ? img.position : index;
         }
-        // Sanitize variantId: only keep if valid UUID
         if (variantId && !isValidUUID(variantId)) {
           variantId = null;
         }
@@ -272,6 +273,8 @@ const updateProduct = async (id, data) => {
           price: price,
           costPrice: costPriceVar,
           stockQuantity: stockQuantityVar,
+          videoUrl: v.videoUrl || null,
+          cloudinaryVideoPublicId: v.cloudinaryVideoPublicId || null,
         };
       });
       await ProductVariant.bulkCreate(variantData, { transaction });
@@ -291,7 +294,6 @@ const updateProduct = async (id, data) => {
             variantId = img.variantId || null;
             position = (img.position !== undefined) ? img.position : index;
           }
-          // Sanitize variantId: only keep if valid UUID
           if (variantId && !isValidUUID(variantId)) {
             variantId = null;
           }
