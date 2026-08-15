@@ -1,7 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { CheckCircle, AlertCircle, Loader2, ExternalLink, RefreshCw, X, Play, Pause, Edit2, Check, Send, FileText, Save, ArrowLeft } from 'lucide-react';
 import axios from 'axios';
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3000/api';
+interface SocialProvider {
+  id: string;
+  name: string;
+  provider_key: string;
+  is_enabled: boolean;
+}
 interface PostToInstagramProps {
   isPosting: boolean;
   postSuccess: boolean;
@@ -19,6 +25,9 @@ interface PostToInstagramProps {
   updateOnlyError?: string | null;
   onBack?: () => void;
   productId?: string | null;
+  variantVideos?: Array<{ id: string; videoUrl: string; variantName: string; }>;
+  selectedVideoId?: string | null;
+  onSelectVideo?: (id: string) => void;
 }
 const PostToInstagram: React.FC<PostToInstagramProps> = ({
   isPosting,
@@ -37,6 +46,9 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
   updateOnlyError = null,
   onBack,
   productId = null,
+  variantVideos = [],
+  selectedVideoId = null,
+  onSelectVideo,
 }) => {
   const [instagramStatus, setInstagramStatus] = useState<{
     connected: boolean;
@@ -58,8 +70,10 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
   const [showCaptionEditor, setShowCaptionEditor] = useState(false);
   const [caption, setCaption] = useState('');
   const [isPlaying, setIsPlaying] = useState(false);
-  // New state for media type selection
   const [mediaType, setMediaType] = useState<'REELS' | 'VIDEO'>('REELS');
+  const [selectedProvider, setSelectedProvider] = useState<string>('');
+  const [socialProviders, setSocialProviders] = useState<SocialProvider[]>([]);
+  const [loadingProviders, setLoadingProviders] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const apiClient = axios.create({
     baseURL: API_BASE,
@@ -98,7 +112,27 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
       setIsPlaying(!isPlaying);
     }
   };
-  const checkInstagramStatus = async () => {
+  const fetchSocialProviders = useCallback(async () => {
+    setLoadingProviders(true);
+    try {
+      const response = await apiClient.get('/providers');
+      if (response.data.success) {
+        const allProviders = response.data.data || [];
+        const social = allProviders.filter(
+          (p: any) => p.provider_type === 'social' && p.is_enabled === true
+        );
+        setSocialProviders(social);
+        if (social.length > 0 && !selectedProvider) {
+          setSelectedProvider(social[0].id);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch social providers:', err);
+    } finally {
+      setLoadingProviders(false);
+    }
+  }, [apiClient, selectedProvider]);
+  const checkInstagramStatus = useCallback(async () => {
     setIsLoadingStatus(true);
     setStatusError(null);
     try {
@@ -113,7 +147,7 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
     } finally {
       setIsLoadingStatus(false);
     }
-  };
+  }, [apiClient]);
   const disconnectInstagram = async () => {
     try {
       await apiClient.post('/instagram/disconnect');
@@ -157,6 +191,7 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
             clearInterval(checkPopup);
             setPopupWindow(null);
             setShowAuthModal(false);
+            checkInstagramStatus();
           }
         }, 500);
       }
@@ -192,31 +227,44 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
       sessionStorage.removeItem('instagram_redirect_uri');
     }
   };
-  const handlePublishToInstagram = async () => {
-    if (!cloudinaryPublicId) {
+  const handlePublishToProvider = async () => {
+    let targetCloudinaryId = cloudinaryPublicId;
+    if (selectedVideoId && variantVideos.length > 0) {
+      const selected = variantVideos.find(v => v.id === selectedVideoId);
+      if (selected && selected.videoUrl) {
+        targetCloudinaryId = selected.videoUrl;
+      }
+    }
+    const videoUrlToPost = targetCloudinaryId && targetCloudinaryId.startsWith('http')
+      ? targetCloudinaryId
+      : cloudinaryPublicId
+        ? `https://res.cloudinary.com/${process.env.REACT_APP_CLOUDINARY_CLOUD_NAME || 'lovecart'}/video/upload/${cloudinaryPublicId}.mp4`
+        : null;
+    if (!videoUrlToPost) {
       setPublishError('Please generate a video and upload to Cloudinary first');
       return;
     }
-    const cloudinaryVideoUrl = `https://res.cloudinary.com/${process.env.REACT_APP_CLOUDINARY_CLOUD_NAME || 'lovecart'}/video/upload/${cloudinaryPublicId}.mp4`;
-    if (!instagramStatus.connected) {
-      setPublishError('Please connect Instagram account first');
+    if (!selectedProvider) {
+      setPublishError('Please select a social provider');
       return;
     }
     setIsPublishing(true);
     setPublishError(null);
     setPublishSuccess(null);
     try {
-      const response = await apiClient.post('/instagram/post', {
-        video_url: cloudinaryVideoUrl,
-        media_type: mediaType, // send selected media type
+      const response = await apiClient.post('/social/post', {
+        providerId: selectedProvider,
+        video_url: videoUrlToPost,
+        media_type: mediaType,
         caption: caption || generateDefaultCaption()
       });
       if (response.data.success) {
-        setPublishSuccess('Video posted to Instagram successfully! 🎉');
+        const providerName = socialProviders.find(p => p.id === selectedProvider)?.name || 'Social';
+        setPublishSuccess(`Video posted to ${providerName} successfully! 🎉`);
       }
     } catch (err: any) {
-      console.error('Failed to post to Instagram:', err);
-      setPublishError(err.response?.data?.message || 'Failed to post video to Instagram');
+      console.error('Failed to post to social provider:', err);
+      setPublishError(err.response?.data?.message || 'Failed to post video');
     } finally {
       setIsPublishing(false);
     }
@@ -245,9 +293,18 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
   }, []);
   useEffect(() => {
     checkInstagramStatus();
-  }, []);
+    fetchSocialProviders();
+  }, [checkInstagramStatus, fetchSocialProviders]);
+  const getPreviewVideoUrl = () => {
+    if (selectedVideoId && variantVideos.length > 0) {
+      const selected = variantVideos.find(v => v.id === selectedVideoId);
+      if (selected && selected.videoUrl) return selected.videoUrl;
+    }
+    return videoUrl;
+  };
+  const previewVideoUrl = getPreviewVideoUrl();
   const renderVideoPreview = () => {
-    if (!videoUrl) {
+    if (!previewVideoUrl) {
       return (
         <div className="bg-gray-100 rounded-lg p-8 text-center border-2 border-dashed border-gray-300">
           <Play size={40} className="mx-auto text-gray-400 mb-3" />
@@ -260,7 +317,7 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
       <div className="relative bg-black rounded-lg overflow-hidden">
         <video
           ref={videoRef}
-          src={videoUrl}
+          src={previewVideoUrl}
           className="w-full max-h-80 object-contain"
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}
@@ -308,7 +365,7 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
             onChange={(e) => setCaption(e.target.value)}
             rows={4}
             className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none text-sm"
-            placeholder="Write your Instagram caption..."
+            placeholder="Write your caption..."
           />
           <div className="flex justify-between text-xs text-gray-400">
             <span>{caption.length} characters</span>
@@ -351,7 +408,7 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
           {isEditMode ? 'Product Updated Successfully!' : 'Product Created Successfully!'}
         </h3>
         <p className="text-gray-600">
-          {isEditMode 
+          {isEditMode
             ? 'Your product has been updated and is now ready to be posted.'
             : 'Your product has been created and is now ready to be posted.'
           }
@@ -364,10 +421,10 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
             Create Another Product
           </button>
           <button
-            onClick={handlePublishToInstagram}
-            disabled={!instagramStatus.connected || isPublishing || !cloudinaryPublicId}
+            onClick={handlePublishToProvider}
+            disabled={!selectedProvider || isPublishing || !cloudinaryPublicId}
             className={`bg-gradient-to-r from-purple-500 to-pink-500 text-white px-6 py-2 rounded-lg hover:opacity-90 transition-opacity flex items-center justify-center gap-2 ${
-              !instagramStatus.connected || isPublishing || !cloudinaryPublicId ? 'opacity-50 cursor-not-allowed' : ''
+              !selectedProvider || isPublishing || !cloudinaryPublicId ? 'opacity-50 cursor-not-allowed' : ''
             }`}
           >
             {isPublishing ? (
@@ -375,12 +432,12 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
             ) : (
               <Send size={18} />
             )}
-            {!cloudinaryPublicId ? 'Upload to Cloudinary First' : 'Post to Instagram'}
+            {!cloudinaryPublicId ? 'Upload to Cloudinary First' : 'Post to Social'}
           </button>
         </div>
         {!cloudinaryPublicId && (
           <p className="text-sm text-yellow-600 text-center">
-            ⚠️ Video must be uploaded to Cloudinary before posting to Instagram
+            ⚠️ Video must be uploaded to Cloudinary before posting
           </p>
         )}
       </div>
@@ -396,7 +453,7 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
             <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line>
           </svg>
         </span>
-        {isEditMode ? 'Update & Post to Instagram' : 'Post to Instagram'}
+        {isEditMode ? 'Update & Post to Social' : 'Post to Social'}
       </h2>
       {connectError && (
         <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3 text-red-700">
@@ -422,9 +479,10 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
           <span>{updateOnlyError}</span>
         </div>
       )}
+      {/* Instagram Connection Status */}
       <div className={`rounded-lg p-4 border ${
-        instagramStatus.connected 
-          ? 'bg-green-50 border-green-200' 
+        instagramStatus.connected
+          ? 'bg-green-50 border-green-200'
           : 'bg-yellow-50 border-yellow-200'
       }`}>
         <div className="flex items-center justify-between flex-wrap gap-2">
@@ -493,6 +551,71 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
           </div>
         )}
       </div>
+      {/* Social Provider Selection */}
+      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+        <div className="p-4 border-b">
+          <h3 className="font-medium text-slate-700 flex items-center gap-2">
+            <svg className="w-5 h-5 text-purple-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="2" y1="12" x2="22" y2="12" />
+              <line x1="12" y1="2" x2="12" y2="22" />
+            </svg>
+            Select Social Provider
+          </h3>
+        </div>
+        <div className="p-4">
+          {loadingProviders ? (
+            <div className="flex items-center justify-center py-4">
+              <Loader2 size={24} className="animate-spin text-purple-600" />
+            </div>
+          ) : socialProviders.length === 0 ? (
+            <div className="text-center py-4 text-gray-500">
+              <p>No social providers configured. Please go to</p>
+              <a href="/social-post-video-config" className="text-purple-600 hover:underline">
+                Social Post Video Configuration
+              </a>
+              <p>to add and enable providers.</p>
+            </div>
+          ) : (
+            <select
+              value={selectedProvider}
+              onChange={(e) => setSelectedProvider(e.target.value)}
+              className="input-field w-full"
+            >
+              {socialProviders.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.name} ({provider.provider_key})
+                </option>
+              ))}
+            </select>
+          )}
+          <p className="text-xs text-gray-400 mt-2">
+            Select the social media platform where you want to post your video.
+          </p>
+        </div>
+      </div>
+      {/* Variant Video Selector */}
+      {variantVideos && variantVideos.length > 0 && (
+        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+          <div className="p-4 border-b">
+            <h3 className="font-medium text-slate-700">Select Variant Video</h3>
+          </div>
+          <div className="p-4">
+            <select
+              value={selectedVideoId || ''}
+              onChange={(e) => onSelectVideo && onSelectVideo(e.target.value)}
+              className="input-field w-full"
+            >
+              <option value="">-- Select a variant video --</option>
+              {variantVideos.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.variantName}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
       <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
         <div className="p-4 border-b">
           <h3 className="font-medium text-slate-700 flex items-center gap-2">
@@ -531,7 +654,6 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
           </button>
         </div>
       </div>
-      {/* Media Type Selection */}
       <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
         <div className="p-4 border-b">
           <h3 className="font-medium text-slate-700 flex items-center gap-2">
@@ -574,7 +696,7 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
             </label>
           </div>
           <p className="text-xs text-gray-400 mt-1">
-            Note: "Video" posts appear in the main feed, "Reels" appear in the Reels tab. The "AI Creator" label may appear based on Instagram's detection; changing the post type may help avoid it.
+            Note: "Video" posts appear in the main feed, "Reels" appear in the Reels tab. The "AI Creator" label may appear based on detection.
           </p>
         </div>
       </div>
@@ -621,16 +743,16 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
           </button>
         )}
         <button
-          onClick={handlePublishToInstagram}
-          disabled={isPosting || !instagramStatus.connected || !cloudinaryPublicId || isConnecting || isPublishing || isUpdatingOnly || !productId}
+          onClick={handlePublishToProvider}
+          disabled={isPosting || !selectedProvider || !cloudinaryPublicId || isConnecting || isPublishing || isUpdatingOnly || !productId || socialProviders.length === 0}
           className={`flex-1 btn-primary flex items-center justify-center gap-2 py-3 ${
-            (!instagramStatus.connected || !cloudinaryPublicId || isConnecting || isPublishing || isUpdatingOnly || !productId) ? 'opacity-50 cursor-not-allowed' : ''
+            (!selectedProvider || !cloudinaryPublicId || isConnecting || isPublishing || isUpdatingOnly || !productId || socialProviders.length === 0) ? 'opacity-50 cursor-not-allowed' : ''
           }`}
         >
           {isPublishing || isPosting ? (
             <>
               <Loader2 size={20} className="animate-spin" />
-              {isPublishing ? 'Posting to Instagram...' : isPosting ? 'Saving...' : ''}
+              {isPublishing ? 'Posting...' : isPosting ? 'Saving...' : ''}
             </>
           ) : isConnecting ? (
             <>
@@ -640,7 +762,7 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
           ) : (
             <>
               <Send size={20} />
-              {!cloudinaryPublicId ? 'Upload to Cloudinary First' : 'Post to Instagram'}
+              {!cloudinaryPublicId ? 'Upload to Cloudinary First' : 'Post to Social'}
             </>
           )}
         </button>
@@ -678,7 +800,7 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
       </div>
       {!productId && !isEditMode && (
         <p className="text-sm text-yellow-600 text-center">
-          ⚠️ Please save the product first before posting to Instagram.
+          ⚠️ Please save the product first before posting.
         </p>
       )}
       {!instagramStatus.connected && !isConnecting && (
@@ -688,7 +810,7 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
       )}
       {!cloudinaryPublicId && (
         <p className="text-sm text-yellow-600 text-center">
-          ⚠️ Video must be uploaded to Cloudinary before posting to Instagram
+          ⚠️ Video must be uploaded to Cloudinary before posting
         </p>
       )}
       {isConnecting && (
@@ -698,7 +820,7 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
       )}
       {isPublishing && (
         <p className="text-sm text-purple-600 text-center">
-          📤 Posting your video to Instagram...
+          📤 Posting your video...
         </p>
       )}
       {showAuthModal && (
@@ -742,7 +864,7 @@ const PostToInstagram: React.FC<PostToInstagramProps> = ({
               </div>
               <h4 className="text-lg font-semibold text-slate-800 mb-2">Redirecting to Instagram</h4>
               <p className="text-gray-600 text-sm mb-6">
-                You'll be redirected to Instagram to authorize your account. 
+                You'll be redirected to Instagram to authorize your account.
                 Please allow popups if prompted.
               </p>
               <div className="flex flex-col gap-3">

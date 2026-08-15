@@ -14,4 +14,6 @@ router.get('/status', socialController.getConnections);
 router.get('/status/:providerId', socialController.getConnectionStatus);
 // Disconnect
 router.delete('/disconnect/:connectionId', socialController.disconnect);
+// Post video to a social provider
+router.post('/post', socialController.postToSocial);
 module.exports = router;

@@ -87,3 +87,43 @@ exports.disconnect = async (req, res, next) => {
     next(error);
   }
 };
+/**
+ * Post video to a social provider
+ */
+exports.postToSocial = async (req, res, next) => {
+  try {
+    const { providerId, video_url, media_type = 'REELS', caption = '' } = req.body;
+    const userId = req.user.id;
+    if (!providerId) {
+      const err = new Error('providerId is required');
+      err.status = 400;
+      throw err;
+    }
+    if (!video_url) {
+      const err = new Error('video_url is required');
+      err.status = 400;
+      throw err;
+    }
+    if (!video_url.startsWith('http://') && !video_url.startsWith('https://')) {
+      const err = new Error('video_url must be a valid HTTP/HTTPS URL');
+      err.status = 400;
+      throw err;
+    }
+    const result = await socialService.postVideo(userId, providerId, video_url, media_type, caption);
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: `Video posted successfully`,
+    });
+  } catch (error) {
+    console.error('Social post error:', error);
+    const status = error.status || 500;
+    const message = error.message || 'Failed to post video';
+    res.status(status).json({
+      success: false,
+      error: message,
+      message: message,
+      timestamp: Date.now()
+    });
+  }
+};

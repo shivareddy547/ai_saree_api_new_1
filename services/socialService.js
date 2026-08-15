@@ -29,7 +29,6 @@ const getOAuthUrl = async (providerId, userId) => {
       err.status = 400;
       throw err;
     }
-    // Build Instagram OAuth URL
     const scopeStr = scope || 'instagram_business_basic,instagram_business_content_publish';
     const url = `https://api.instagram.com/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&state=${providerId}`;
     return url;
@@ -43,7 +42,6 @@ const getOAuthUrl = async (providerId, userId) => {
  * Exchange code for tokens and store connection.
  */
 const connect = async (userId, code, state) => {
-  // state should be providerId
   const providerId = state;
   if (!providerId) {
     const err = new Error('Missing state parameter (providerId)');
@@ -69,7 +67,6 @@ const connect = async (userId, code, state) => {
       err.status = 400;
       throw err;
     }
-    // Exchange code for token using instagramService functions
     let tokenData;
     try {
       tokenData = await exchangeCodeForToken(code, redirectUri, clientId, clientSecret);
@@ -79,7 +76,6 @@ const connect = async (userId, code, state) => {
     }
     const shortToken = tokenData.access_token;
     const accountId = tokenData.user_id;
-    // Get long-lived token
     let longLivedData;
     try {
       longLivedData = await getLongLivedToken(shortToken, clientSecret);
@@ -87,7 +83,6 @@ const connect = async (userId, code, state) => {
       console.error('Long-lived token error:', error);
       throw new Error('Failed to get long-lived token');
     }
-    // Get user info
     let userInfo;
     try {
       userInfo = await getInstagramUserInfo(longLivedData.access_token, accountId);
@@ -97,7 +92,6 @@ const connect = async (userId, code, state) => {
     }
     const expiresIn = longLivedData.expires_in || 60 * 24 * 60 * 60;
     const expiresAt = new Date(Date.now() + expiresIn * 1000);
-    // Upsert connection in UserSocialConnection
     const [connection, created] = await UserSocialConnection.findOrCreate({
       where: { userId, providerId },
       defaults: {
@@ -121,7 +115,6 @@ const connect = async (userId, code, state) => {
         metadata: { ...userInfo },
       });
     }
-    // Also sync with User model for Instagram (to maintain backward compatibility)
     await User.update({
       instagramAccessToken: longLivedData.access_token,
       instagramAccountId: accountId,
@@ -209,7 +202,6 @@ const disconnect = async (userId, connectionId) => {
     err.status = 404;
     throw err;
   }
-  // If provider is Instagram, also clear User model fields
   if (conn.providerType === 'instagram') {
     await User.update({
       instagramAccessToken: null,
@@ -224,10 +216,57 @@ const disconnect = async (userId, connectionId) => {
   await conn.destroy();
   return { disconnected: true };
 };
+/**
+ * Post video to a social provider.
+ * Currently supports Instagram only, extendable to others.
+ */
+const postVideo = async (userId, providerId, videoUrl, mediaType, caption) => {
+  const provider = await Provider.findByPk(providerId);
+  if (!provider) {
+    const err = new Error('Provider not found');
+    err.status = 404;
+    throw err;
+  }
+  if (!provider.is_enabled) {
+    const err = new Error('Provider is not enabled');
+    err.status = 400;
+    throw err;
+  }
+  if (provider.provider_type !== 'social') {
+    const err = new Error('Not a social provider');
+    err.status = 400;
+    throw err;
+  }
+  const { provider_key } = provider;
+  // Get the user's connection for this provider
+  const connection = await UserSocialConnection.findOne({
+    where: { userId, providerId },
+  });
+  if (!connection || !connection.accessToken) {
+    const err = new Error('No connected account found for this provider');
+    err.status = 401;
+    throw err;
+  }
+  if (connection.tokenExpiresAt && new Date(connection.tokenExpiresAt) < new Date()) {
+    const err = new Error('Token expired. Please reconnect your account.');
+    err.status = 401;
+    throw err;
+  }
+  // Delegate to provider-specific posting logic
+  if (provider_key === 'instagram') {
+    const { postReel } = require('./instagramService');
+    return await postReel(userId, videoUrl, mediaType, caption);
+  } else {
+    const err = new Error(`Posting to ${provider_key} is not yet supported`);
+    err.status = 400;
+    throw err;
+  }
+};
 module.exports = {
   getOAuthUrl,
   connect,
   getConnections,
   getConnectionStatus,
   disconnect,
+  postVideo,
 };
