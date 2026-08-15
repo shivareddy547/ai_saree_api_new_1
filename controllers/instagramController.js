@@ -1,11 +1,7 @@
 const instagramService = require('../services/instagramService');
-/**
- * Get Instagram OAuth URL
- */
 exports.getOAuthUrl = async (req, res, next) => {
   try {
-    const { redirectUri } = req.query;
-    const url = instagramService.getOAuthUrl(redirectUri);
+    const url = instagramService.getOAuthUrl();
     res.status(200).json({
       success: true,
       data: { url },
@@ -16,19 +12,16 @@ exports.getOAuthUrl = async (req, res, next) => {
     next(error);
   }
 };
-/**
- * Connect Instagram account using authorization code
- */
 exports.connectInstagram = async (req, res, next) => {
   try {
-    const { code, redirectUri } = req.body;
+    const { code } = req.body;
     if (!code) {
       const err = new Error('Authorization code is required');
       err.status = 400;
       throw err;
     }
     const userId = req.user.id;
-    const result = await instagramService.connectAccount(userId, code, redirectUri);
+    const result = await instagramService.connectAccount(userId, code);
     res.status(200).json({
       success: true,
       data: result,
@@ -39,9 +32,6 @@ exports.connectInstagram = async (req, res, next) => {
     next(error);
   }
 };
-/**
- * Get Instagram account status for current user
- */
 exports.getInstagramStatus = async (req, res, next) => {
   try {
     const userId = req.user.id;
@@ -56,9 +46,6 @@ exports.getInstagramStatus = async (req, res, next) => {
     next(error);
   }
 };
-/**
- * Disconnect Instagram account
- */
 exports.disconnectInstagram = async (req, res, next) => {
   try {
     const userId = req.user.id;
@@ -73,9 +60,6 @@ exports.disconnectInstagram = async (req, res, next) => {
     next(error);
   }
 };
-/**
- * Post a video to Instagram (Reels or Feed)
- */
 exports.postToInstagram = async (req, res, next) => {
   try {
     const { video_url, media_type = 'REELS', caption = '' } = req.body;
@@ -85,13 +69,11 @@ exports.postToInstagram = async (req, res, next) => {
       err.status = 400;
       throw err;
     }
-    // Validate video_url format
     if (!video_url.startsWith('http://') && !video_url.startsWith('https://')) {
       const err = new Error('video_url must be a valid HTTP/HTTPS URL');
       err.status = 400;
       throw err;
     }
-    // Validate media_type: only REELS and VIDEO are supported
     if (media_type !== 'REELS' && media_type !== 'VIDEO') {
       const err = new Error('media_type must be either "REELS" or "VIDEO"');
       err.status = 400;
@@ -110,7 +92,6 @@ exports.postToInstagram = async (req, res, next) => {
     });
   } catch (error) {
     console.error('Instagram post error:', error);
-    // Send more detailed error to client
     const status = error.status || 500;
     const message = error.message || 'Failed to post video to Instagram';
     res.status(status).json({

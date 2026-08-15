@@ -67,26 +67,18 @@ app.get('/health', (req, res) => {
 });
 // ==========================================
 // API ROUTES
-// Order matters. Public routes registered first.
-// productRoutes is mounted at /api but auth is applied
-// ONLY on its specific /products routes (not router.use).
 // ==========================================
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/help-us', require('./routes/helpUsRoutes'));
 app.use('/api/providers', require('./routes/providerRoutes'));
-// PUBLIC – categories (no auth)
+app.use('/api/social', require('./routes/socialRoutes'));  // NEW
 app.use('/api/categories', require('./routes/categoryRoutes'));
-// PUBLIC store browse – products / detail / autocomplete (no auth)
-// Wishlist routes inside still require auth
 app.use('/api/store', require('./routes/storeRoutes'));
-// Cart – GET public (empty for guests); mutations require auth
 app.use('/api/cart', require('./routes/cartRoutes'));
-// Admin product CRUD (auth on each route inside productRoutes)
 app.use('/api', require('./routes/productRoutes'));
 app.use('/api/instagram', require('./routes/instagramRoutes'));
 app.use('/api/orders', require('./routes/orderRoutes'));
 app.use('/api/user-voices', require('./routes/userVoiceRoutes'));
-// User profile routes
 app.use('/api/user', require('./routes/userRoutes'));
 // ==========================================
 // SWAGGER UI
