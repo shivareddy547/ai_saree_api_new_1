@@ -86,6 +86,8 @@ app.use('/api', require('./routes/productRoutes'));
 app.use('/api/instagram', require('./routes/instagramRoutes'));
 app.use('/api/orders', require('./routes/orderRoutes'));
 app.use('/api/user-voices', require('./routes/userVoiceRoutes'));
+// User profile routes
+app.use('/api/user', require('./routes/userRoutes'));
 // ==========================================
 // SWAGGER UI
 // ==========================================
