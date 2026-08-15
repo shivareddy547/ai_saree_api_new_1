@@ -1,7 +1,7 @@
 const authService = require('../services/authService');
 const signup = async (req, res, next) => {
     try {
-        const { fullName, email, password, role } = req.body;
+        const { fullName, email, password, role, phone } = req.body;
         if (!fullName || !email || !password) {
             return res.status(400).json({
                 success: false,
@@ -29,7 +29,7 @@ const signup = async (req, res, next) => {
                 });
             }
         }
-        const result = await authService.signup({ fullName, email, password, role: finalRole });
+        const result = await authService.signup({ fullName, email, password, role: finalRole, phone });
         return res.status(201).json({
             success: true,
             data: result,

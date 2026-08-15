@@ -25,11 +25,11 @@ const generateToken = (user) => {
 };
 /**
  * Sign up a new user
- * @param {Object} data - { fullName, email, password, role? }
+ * @param {Object} data - { fullName, email, password, role?, phone? }
  * @returns {Object} { user, otp }
  */
 exports.signup = async (data) => {
-  const { fullName, email, password, role = 'user' } = data;
+  const { fullName, email, password, role = 'user', phone } = data;
   // Check if user already exists
   const existingUser = await User.findOne({ where: { email } });
   if (existingUser) {
@@ -51,6 +51,7 @@ exports.signup = async (data) => {
     otpExpires,
     isEmailVerified: false,
     role: role,
+    phone: phone || null,
   });
   // In production, send OTP via email
   console.log(`OTP for ${email}: ${otp}`);
@@ -59,6 +60,7 @@ exports.signup = async (data) => {
       id: user.id,
       fullName: user.fullName,
       email: user.email,
+      phone: user.phone,
       isEmailVerified: user.isEmailVerified,
       role: user.role,
     },
@@ -104,6 +106,7 @@ exports.login = async (data) => {
       id: user.id,
       fullName: user.fullName,
       email: user.email,
+      phone: user.phone,
       isEmailVerified: user.isEmailVerified,
       role: user.role,
     },
@@ -155,6 +158,7 @@ exports.verifyOtp = async (data) => {
       id: user.id,
       fullName: user.fullName,
       email: user.email,
+      phone: user.phone,
       isEmailVerified: user.isEmailVerified,
       role: user.role,
     },

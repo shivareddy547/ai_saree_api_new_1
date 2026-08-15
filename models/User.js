@@ -2,10 +2,11 @@ const { Model, DataTypes } = require('sequelize');
 module.exports = (sequelize) => {
   class User extends Model {
     static associate(models) {
-      User.hasMany(models.Product, {
-        foreignKey: 'userId',
-        as: 'products'
-      });
+      User.hasMany(models.Product, { foreignKey: 'userId', as: 'products' });
+      User.hasOne(models.Cart, { foreignKey: 'userId', as: 'cart' });
+      User.hasMany(models.Order, { foreignKey: 'userId', as: 'orders' });
+      User.hasMany(models.WishlistItem, { foreignKey: 'userId', as: 'wishlist' });
+      User.hasMany(models.UserVoice, { foreignKey: 'userId', as: 'voices' });
     }
   }
   User.init({
@@ -22,13 +23,14 @@ module.exports = (sequelize) => {
       type: DataTypes.STRING,
       allowNull: false,
       unique: true,
-      validate: {
-        isEmail: true,
-      },
     },
     password: {
       type: DataTypes.STRING,
       allowNull: false,
+    },
+    phone: {
+      type: DataTypes.STRING,
+      allowNull: true,
     },
     isEmailVerified: {
       type: DataTypes.BOOLEAN,
@@ -43,7 +45,7 @@ module.exports = (sequelize) => {
       allowNull: true,
     },
     role: {
-      type: DataTypes.ENUM('admin', 'user'),
+      type: DataTypes.ENUM('user', 'admin'),
       defaultValue: 'user',
       allowNull: false,
     },
