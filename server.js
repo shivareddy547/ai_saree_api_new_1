@@ -73,6 +73,7 @@ app.get('/health', (req, res) => {
 // ==========================================
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/help-us', require('./routes/helpUsRoutes'));
+app.use('/api/providers', require('./routes/providerRoutes'));
 // PUBLIC – categories (no auth)
 app.use('/api/categories', require('./routes/categoryRoutes'));
 // PUBLIC store browse – products / detail / autocomplete (no auth)
