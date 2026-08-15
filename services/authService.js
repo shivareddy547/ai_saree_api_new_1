@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { User } = require('../models');
 const { Op } = require('sequelize');
+const { sendOtpEmail, sendOtpSms } = require('./notificationService');
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const JWT_EXPIRY = process.env.JWT_EXPIRY || '7d';
 /**
@@ -53,7 +54,17 @@ exports.signup = async (data) => {
     role: role,
     phone: phone || null,
   });
-  // In production, send OTP via email
+  // Send OTP via SMS if phone is provided
+  if (phone) {
+    sendOtpSms(phone, otp).catch(err =>
+      console.error('SMS OTP send failed in background:', err.message)
+    );
+  }
+  // Send OTP via email if SMTP provider is enabled (handled internally)
+  sendOtpEmail(email, otp).catch(err =>
+    console.error('Email OTP send failed in background:', err.message)
+  );
+  // Log OTP for development
   console.log(`OTP for ${email}: ${otp}`);
   return {
     user: {
@@ -95,7 +106,16 @@ exports.login = async (data) => {
     const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
     await user.update({ otp, otpExpires });
     console.log(`New OTP for ${email}: ${otp}`);
-    const err = new Error('Email not verified. A new OTP has been sent to your email.');
+    // Resend OTP via email/SMS
+    if (user.phone) {
+      sendOtpSms(user.phone, otp).catch(err =>
+        console.error('SMS OTP send failed in background:', err.message)
+      );
+    }
+    sendOtpEmail(email, otp).catch(err =>
+      console.error('Email OTP send failed in background:', err.message)
+    );
+    const err = new Error('Email not verified. A new OTP has been sent.');
     err.status = 403;
     throw err;
   }
@@ -190,6 +210,15 @@ exports.resendOtp = async (data) => {
   const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
   await user.update({ otp, otpExpires });
   console.log(`New OTP for ${email}: ${otp}`);
+  // Send via email and SMS if possible
+  if (user.phone) {
+    sendOtpSms(user.phone, otp).catch(err =>
+      console.error('SMS OTP send failed in background:', err.message)
+    );
+  }
+  sendOtpEmail(email, otp).catch(err =>
+    console.error('Email OTP send failed in background:', err.message)
+  );
   return { message: 'OTP sent successfully' };
 };
 /**
