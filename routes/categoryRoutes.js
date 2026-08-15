@@ -4,20 +4,18 @@ const categoryController = require('../controllers/categoryController');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-// Ensure uploads directory exists
-const uploadDir = 'uploads/categories';
+const uploadDir = path.join(__dirname, '../uploads/categories');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
-// Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
     cb(null, 'category-' + uniqueSuffix + path.extname(file.originalname));
-  }
+  },
 });
 const fileFilter = (req, file, cb) => {
   if (file.mimetype.startsWith('image/')) {
@@ -28,12 +26,13 @@ const fileFilter = (req, file, cb) => {
 };
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
-  fileFilter: fileFilter
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: fileFilter,
 });
-// Routes
+// PUBLIC – no authentication required
 router.get('/', categoryController.getAllCategories);
 router.get('/:id', categoryController.getCategoryById);
+// Write operations
 router.post('/', upload.single('image'), categoryController.createCategory);
 router.put('/:id', upload.single('image'), categoryController.updateCategory);
 router.delete('/:id', categoryController.deleteCategory);

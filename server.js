@@ -5,35 +5,32 @@ const path = require('path');
 const fs = require('fs');
 const app = express();
 // ==========================================
-// CORS CONFIGURATION - FIXED
+// CORS CONFIGURATION
 // ==========================================
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
-  'http://localhost:3002'
+  'http://localhost:3002',
 ];
 const corsOptions = {
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
     let isAllowed = false;
-    // Allow explicitly configured origins
     if (allowedOrigins.indexOf(origin) !== -1) {
       isAllowed = true;
     }
-    // Allow dynamic ngrok-free.app URLs
     try {
       const url = new URL(origin);
-      if (
-        url.protocol === 'https:' &&
-        url.hostname.endsWith('.ngrok-free.app')
-      ) {
+      if (url.protocol === 'https:' && url.hostname.endsWith('.ngrok-free.app')) {
         isAllowed = true;
       }
     } catch (error) {
       isAllowed = false;
     }
-    // Allow all origins in development
     if (process.env.NODE_ENV === 'development') {
+      isAllowed = true;
+    }
+    if (origin && (origin.includes('152.67.5.153') || origin.includes('localhost'))) {
       isAllowed = true;
     }
     if (isAllowed) {
@@ -47,7 +44,7 @@ const corsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
   credentials: true,
   optionsSuccessStatus: 200,
-  preflightContinue: false
+  preflightContinue: false,
 };
 app.use(cors(corsOptions));
 app.use(express.json());
@@ -65,22 +62,28 @@ app.get('/health', (req, res) => {
     status: 'OK',
     timestamp: Date.now(),
     uptime: process.uptime(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
   });
 });
 // ==========================================
 // API ROUTES
+// Order matters. Public routes registered first.
+// productRoutes is mounted at /api but auth is applied
+// ONLY on its specific /products routes (not router.use).
 // ==========================================
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/help-us', require('./routes/helpUsRoutes'));
-app.use('/api', require('./routes/productRoutes')); // admin product routes (auth required)
-app.use('/api/instagram', require('./routes/instagramRoutes'));
+// PUBLIC – categories (no auth)
 app.use('/api/categories', require('./routes/categoryRoutes'));
-// New store, cart, order routes
-app.use('/api/cart', require('./routes/cartRoutes'));
-app.use('/api/orders', require('./routes/orderRoutes'));
+// PUBLIC store browse – products / detail / autocomplete (no auth)
+// Wishlist routes inside still require auth
 app.use('/api/store', require('./routes/storeRoutes'));
-// User Voices routes
+// Cart – GET public (empty for guests); mutations require auth
+app.use('/api/cart', require('./routes/cartRoutes'));
+// Admin product CRUD (auth on each route inside productRoutes)
+app.use('/api', require('./routes/productRoutes'));
+app.use('/api/instagram', require('./routes/instagramRoutes'));
+app.use('/api/orders', require('./routes/orderRoutes'));
 app.use('/api/user-voices', require('./routes/userVoiceRoutes'));
 // ==========================================
 // SWAGGER UI
@@ -110,14 +113,14 @@ app.get('/api-docs/swagger.json', (req, res) => {
   } else {
     res.status(404).json({
       error: 'Swagger specification not found',
-      message: 'Run npm run swagger:generate to generate documentation'
+      message: 'Run npm run swagger:generate to generate documentation',
     });
   }
 });
 app.use(/^\/api\//, (req, res) => {
   res.status(404).json({
     error: 'Not Found',
-    message: `Cannot ${req.method} ${req.url}`
+    message: `Cannot ${req.method} ${req.url}`,
   });
 });
 app.use((err, req, res, next) => {
@@ -126,7 +129,7 @@ app.use((err, req, res, next) => {
     error: err.message || 'Internal Server Error',
     message: err.message,
     timestamp: Date.now(),
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
   });
 });
 const PORT = process.env.PORT || 3000;

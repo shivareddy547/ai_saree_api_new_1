@@ -2,11 +2,15 @@ const express = require('express');
 const router = express.Router();
 const storeController = require('../controllers/storeController');
 const authMiddleware = require('../middleware/authMiddleware');
-// Public routes (no auth)
+// =====================================================
+// PUBLIC ROUTES – no authentication required
+// =====================================================
 router.get('/products', storeController.getProducts);
 router.get('/products/:id', storeController.getProductById);
 router.get('/autocomplete', storeController.autocomplete);
-// Wishlist routes (require auth)
+// =====================================================
+// AUTHENTICATED ROUTES – wishlist requires login
+// =====================================================
 router.post('/wishlist/toggle', authMiddleware, storeController.toggleWishlist);
 router.get('/wishlist', authMiddleware, storeController.getWishlist);
 router.get('/wishlist/count', authMiddleware, storeController.getWishlistCount);
