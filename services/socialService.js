@@ -2,9 +2,10 @@ const { Provider, UserSocialConnection, User } = require('../models');
 const { exchangeCodeForToken, getLongLivedToken, getInstagramUserInfo } = require('./instagramService');
 const { getOAuthUrl: getPinterestOAuthUrl, exchangeCodeForToken: exchangePinterestCode, getUserInfo: getPinterestUserInfo } = require('./pinterestService');
 const facebookService = require('./facebookService');
+const axios = require('axios');
 /**
  * Build OAuth URL for a given provider.
- * Supports Instagram, Pinterest, and Facebook.
+ * Supports Instagram, Pinterest, Facebook, and YouTube.
  */
 const getOAuthUrl = async (providerId, userId) => {
   const provider = await Provider.findByPk(providerId);
@@ -58,8 +59,20 @@ const getOAuthUrl = async (providerId, userId) => {
     }
     const scopeStr = scope || 'pages_manage_posts,pages_read_engagement';
     const url = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopeStr)}&state=${providerId}`;
-    // Log the generated URL for debugging
     console.log('Facebook OAuth URL:', url);
+    return url;
+  } else if (provider_key === 'youtube') {
+    let { client_id, redirect_uri, scope } = credentials;
+    client_id = client_id ? client_id.trim() : '';
+    redirect_uri = redirect_uri ? redirect_uri.trim() : '';
+    scope = scope ? scope.trim() : '';
+    if (!client_id || !redirect_uri) {
+      const err = new Error('Missing required credentials for YouTube');
+      err.status = 400;
+      throw err;
+    }
+    const scopeStr = scope || 'https://www.googleapis.com/auth/youtube.upload';
+    const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${client_id}&redirect_uri=${encodeURIComponent(redirect_uri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&state=${providerId}&access_type=offline&prompt=consent`;
     return url;
   } else {
     const err = new Error(`Provider ${provider_key} not yet supported for OAuth`);
@@ -69,7 +82,7 @@ const getOAuthUrl = async (providerId, userId) => {
 };
 /**
  * Exchange code for tokens and store connection.
- * Supports Instagram, Pinterest, and Facebook.
+ * Supports Instagram, Pinterest, Facebook, and YouTube.
  */
 const connect = async (userId, code, state) => {
   const providerId = state;
@@ -301,6 +314,93 @@ const connect = async (userId, code, state) => {
       tokenExpiresAt: expiresAt,
     };
   }
+  // --- YouTube ---
+  else if (provider_key === 'youtube') {
+    let { client_id, client_secret, redirect_uri } = credentials;
+    client_id = client_id ? client_id.trim() : '';
+    client_secret = client_secret ? client_secret.trim() : '';
+    redirect_uri = redirect_uri ? redirect_uri.trim() : '';
+    if (!client_id || !client_secret || !redirect_uri) {
+      const err = new Error('Missing YouTube credentials');
+      err.status = 400;
+      throw err;
+    }
+    // Exchange code for tokens
+    let tokenData;
+    try {
+      const response = await axios.post('https://oauth2.googleapis.com/token', null, {
+        params: {
+          code: code,
+          client_id: client_id,
+          client_secret: client_secret,
+          redirect_uri: redirect_uri,
+          grant_type: 'authorization_code',
+        },
+      });
+      tokenData = response.data;
+    } catch (error) {
+      console.error('YouTube token exchange error:', error.response?.data || error.message);
+      throw new Error('Failed to exchange YouTube authorization code');
+    }
+    const accessToken = tokenData.access_token;
+    const refreshToken = tokenData.refresh_token;
+    const expiresIn = tokenData.expires_in;
+    const expiresAt = new Date(Date.now() + expiresIn * 1000);
+    // Fetch channel info
+    let channelInfo;
+    try {
+      const response = await axios.get('https://www.googleapis.com/youtube/v3/channels', {
+        params: {
+          part: 'snippet',
+          mine: true,
+        },
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+      if (response.data.items && response.data.items.length > 0) {
+        channelInfo = response.data.items[0];
+      } else {
+        throw new Error('No channel found for this user');
+      }
+    } catch (error) {
+      console.error('YouTube channel info error:', error.response?.data || error.message);
+      throw new Error('Failed to fetch YouTube channel info');
+    }
+    const accountId = channelInfo.id;
+    const username = channelInfo.snippet.title || 'youtube_channel';
+    const accountType = 'youtube';
+    const [connection, created] = await UserSocialConnection.findOrCreate({
+      where: { userId, providerId },
+      defaults: {
+        providerType: provider_key,
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        tokenExpiresAt: expiresAt,
+        accountId: accountId,
+        username: username,
+        accountType: accountType,
+        metadata: { ...channelInfo },
+      },
+    });
+    if (!created) {
+      await connection.update({
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        tokenExpiresAt: expiresAt,
+        accountId: accountId,
+        username: username,
+        metadata: { ...channelInfo },
+      });
+    }
+    return {
+      connected: true,
+      accountId: accountId,
+      username: username,
+      accountType: accountType,
+      tokenExpiresAt: expiresAt,
+    };
+  }
   else {
     const err = new Error(`Provider ${provider_key} not yet supported for connection`);
     err.status = 400;
@@ -384,13 +484,13 @@ const disconnect = async (userId, connectionId) => {
       where: { id: userId },
     });
   }
-  // For Facebook and Pinterest, no user fields to clear (optional)
   await conn.destroy();
   return { disconnected: true };
 };
 /**
  * Post video to a social provider.
  * Supports Instagram, Facebook (via page), and Pinterest (future).
+ * YouTube posting is not yet implemented.
  */
 const postVideo = async (userId, providerId, videoUrl, mediaType, caption) => {
   const provider = await Provider.findByPk(providerId);
@@ -429,9 +529,7 @@ const postVideo = async (userId, providerId, videoUrl, mediaType, caption) => {
     const { postReel } = require('./instagramService');
     return await postReel(userId, videoUrl, mediaType, caption);
   } else if (provider_key === 'facebook') {
-    // Facebook posting: use page access token
     const userAccessToken = connection.accessToken;
-    // Use the caption as title and description
     const title = caption || 'Video post';
     const description = caption || '';
     const result = await facebookService.postVideoToPage(userAccessToken, videoUrl, title, description);
@@ -442,6 +540,11 @@ const postVideo = async (userId, providerId, videoUrl, mediaType, caption) => {
       page_name: result.pageName,
       video_url: videoUrl,
     };
+  } else if (provider_key === 'youtube') {
+    // YouTube posting not yet implemented
+    const err = new Error('Posting to YouTube is not yet supported');
+    err.status = 400;
+    throw err;
   } else {
     const err = new Error(`Posting to ${provider_key} is not yet supported`);
     err.status = 400;

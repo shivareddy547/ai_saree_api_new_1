@@ -1,6 +1,7 @@
 const axios = require('axios');
 const FACEBOOK_API_BASE = 'https://graph.facebook.com/v18.0';
 const FACEBOOK_OAUTH_BASE = 'https://www.facebook.com/v18.0/dialog/oauth';
+
 /**
  * Exchange authorization code for short-lived access token.
  */
@@ -11,6 +12,7 @@ const exchangeCodeForToken = async (code, redirectUri, clientId, clientSecret) =
     params.append('client_secret', clientSecret);
     params.append('redirect_uri', redirectUri);
     params.append('code', code);
+
     const response = await axios.post(
       `${FACEBOOK_API_BASE}/oauth/access_token`,
       params.toString(),
@@ -31,6 +33,7 @@ const exchangeCodeForToken = async (code, redirectUri, clientId, clientSecret) =
     throw error;
   }
 };
+
 /**
  * Exchange short-lived token for long-lived token (valid ~60 days).
  */
@@ -58,6 +61,7 @@ const getLongLivedToken = async (shortLivedToken, clientId, clientSecret) => {
     throw error;
   }
 };
+
 /**
  * Get Facebook user profile info.
  */
@@ -83,6 +87,7 @@ const getUserInfo = async (accessToken) => {
     throw error;
   }
 };
+
 /**
  * Get list of pages the user manages, and return the first page's access token.
  * Returns { pageId, pageAccessToken }.
@@ -117,6 +122,7 @@ const getPageAccessToken = async (userAccessToken) => {
     throw error;
   }
 };
+
 /**
  * Post a video to a Facebook page.
  * @param {string} userAccessToken - Long-lived user access token.
@@ -130,12 +136,14 @@ const postVideoToPage = async (userAccessToken, videoUrl, title = '', descriptio
     // 1. Get page access token
     const { pageId, pageAccessToken, pageName } = await getPageAccessToken(userAccessToken);
     console.log(`Posting to Facebook page: ${pageName} (${pageId})`);
-    // 2. Prepare the video upload request
+
+    // 2. Prepare the video upload request using file_url parameter (correct API)
     const params = new URLSearchParams();
     params.append('access_token', pageAccessToken);
-    params.append('video_url', videoUrl);
+    params.append('file_url', videoUrl);   // <-- FIXED: use 'file_url' instead of 'video_url'
     if (title) params.append('title', title);
     if (description) params.append('description', description);
+
     const response = await axios.post(
       `${FACEBOOK_API_BASE}/${pageId}/videos`,
       params.toString(),
@@ -143,13 +151,17 @@ const postVideoToPage = async (userAccessToken, videoUrl, title = '', descriptio
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
+        timeout: 60000, // 60 seconds timeout for video upload
       }
     );
+
     if (response.data.error) {
       throw new Error(`Facebook API error: ${response.data.error.message}`);
     }
+
     const videoId = response.data.id;
     const postId = response.data.post_id || null;
+
     return {
       videoId,
       postId,
@@ -167,6 +179,7 @@ const postVideoToPage = async (userAccessToken, videoUrl, title = '', descriptio
     throw error;
   }
 };
+
 // Export all functions
 module.exports = {
   exchangeCodeForToken,
