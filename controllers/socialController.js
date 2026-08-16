@@ -1,4 +1,5 @@
 const socialService = require('../services/socialService');
+
 /**
  * Get OAuth URL for a provider
  */
@@ -16,28 +17,49 @@ exports.getOAuthUrl = async (req, res, next) => {
     next(error);
   }
 };
+
 /**
  * Connect with authorization code
  */
 exports.connect = async (req, res, next) => {
   try {
-    const { code, state } = req.body;
-    if (!code || !state) {
-      const err = new Error('Missing code or state');
+    const { code, state, provider } = req.body;
+    
+    console.log('Connect request body:', { code: code ? 'present' : 'missing', state, provider });
+    
+    if (!code) {
+      const err = new Error('Authorization code is required');
       err.status = 400;
       throw err;
     }
+
+    // If state is missing but provider is provided, use the provider as state
+    // This handles the case where the frontend sends provider separately
+    let finalState = state;
+    if (!finalState && provider) {
+      console.log('State missing, using provider as state:', provider);
+      finalState = provider;
+    }
+
+    if (!finalState) {
+      const err = new Error('State parameter is required');
+      err.status = 400;
+      throw err;
+    }
+
     const userId = req.user.id;
-    const result = await socialService.connect(userId, code, state);
+    const result = await socialService.connect(userId, code, finalState);
     res.status(200).json({
       success: true,
       data: result,
       message: 'Social account connected successfully',
     });
   } catch (error) {
+    console.error('Connect error:', error);
     next(error);
   }
 };
+
 /**
  * Get all social connections for the current user
  */
@@ -54,6 +76,7 @@ exports.getConnections = async (req, res, next) => {
     next(error);
   }
 };
+
 /**
  * Get status for a specific provider connection
  */
@@ -71,6 +94,7 @@ exports.getConnectionStatus = async (req, res, next) => {
     next(error);
   }
 };
+
 /**
  * Disconnect a social connection
  */
@@ -87,6 +111,7 @@ exports.disconnect = async (req, res, next) => {
     next(error);
   }
 };
+
 /**
  * Post video to a social provider
  */
@@ -94,6 +119,9 @@ exports.postToSocial = async (req, res, next) => {
   try {
     const { providerId, video_url, media_type = 'REELS', caption = '' } = req.body;
     const userId = req.user.id;
+
+    console.log('Social post request:', { userId, providerId, video_url, media_type });
+
     if (!providerId) {
       const err = new Error('providerId is required');
       err.status = 400;
@@ -109,6 +137,7 @@ exports.postToSocial = async (req, res, next) => {
       err.status = 400;
       throw err;
     }
+
     const result = await socialService.postVideo(userId, providerId, video_url, media_type, caption);
     res.status(200).json({
       success: true,

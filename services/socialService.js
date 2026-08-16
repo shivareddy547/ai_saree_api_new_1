@@ -3,6 +3,7 @@ const { exchangeCodeForToken, getLongLivedToken, getInstagramUserInfo } = requir
 const { getOAuthUrl: getPinterestOAuthUrl, exchangeCodeForToken: exchangePinterestCode, getUserInfo: getPinterestUserInfo } = require('./pinterestService');
 const facebookService = require('./facebookService');
 const axios = require('axios');
+
 /**
  * Build OAuth URL for a given provider.
  * Supports Instagram, Pinterest, Facebook, and YouTube.
@@ -71,8 +72,9 @@ const getOAuthUrl = async (providerId, userId) => {
       err.status = 400;
       throw err;
     }
-    const scopeStr = scope || 'https://www.googleapis.com/auth/youtube.upload';
-    const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${client_id}&redirect_uri=${encodeURIComponent(redirect_uri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&state=${providerId}&access_type=offline&prompt=consent`;
+    const scopeStr = scope || 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly';
+    const state = `${providerId}:${userId}`;
+    const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${client_id}&redirect_uri=${encodeURIComponent(redirect_uri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&state=${state}&access_type=offline&prompt=consent`;
     return url;
   } else {
     const err = new Error(`Provider ${provider_key} not yet supported for OAuth`);
@@ -80,29 +82,51 @@ const getOAuthUrl = async (providerId, userId) => {
     throw err;
   }
 };
+
 /**
  * Exchange code for tokens and store connection.
  * Supports Instagram, Pinterest, Facebook, and YouTube.
  */
 const connect = async (userId, code, state) => {
-  const providerId = state;
-  if (!providerId) {
-    const err = new Error('Missing state parameter (providerId)');
+  console.log('connect called with state:', state);
+  console.log('userId:', userId);
+  
+  if (!state) {
+    const err = new Error('Missing state parameter');
     err.status = 400;
     throw err;
   }
+
+  // Extract providerId from state
+  // State can be either:
+  // 1. Just the providerId (UUID) - for Instagram/Facebook
+  // 2. providerId:userId format - for YouTube
+  let providerId = state;
+  
+  if (typeof state === 'string' && state.includes(':')) {
+    providerId = state.split(':')[0];
+    console.log('Extracted providerId from state (colon format):', providerId);
+  }
+
+  console.log('Looking up provider with ID:', providerId);
+
   const provider = await Provider.findByPk(providerId);
   if (!provider) {
-    const err = new Error('Provider not found');
+    console.error('Provider not found for ID:', providerId);
+    const err = new Error(`Provider with ID ${providerId} not found`);
     err.status = 404;
     throw err;
   }
+
   if (!provider.is_enabled) {
     const err = new Error('Provider is not enabled');
     err.status = 400;
     throw err;
   }
+
   const { provider_key, credentials } = provider;
+  console.log('Provider key:', provider_key);
+
   // --- Instagram ---
   if (provider_key === 'instagram') {
     let { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri } = credentials;
@@ -280,7 +304,7 @@ const connect = async (userId, code, state) => {
       console.error('Facebook user info error:', error);
       throw new Error('Failed to fetch Facebook user info');
     }
-    const expiresIn = longLivedData.expires_in || 60 * 24 * 60 * 60; // default 60 days
+    const expiresIn = longLivedData.expires_in || 60 * 24 * 60 * 60;
     const expiresAt = new Date(Date.now() + expiresIn * 1000);
     const accountId = userInfo.id;
     const username = userInfo.name || userInfo.email || 'facebook_user';
@@ -351,7 +375,7 @@ const connect = async (userId, code, state) => {
     try {
       const response = await axios.get('https://www.googleapis.com/youtube/v3/channels', {
         params: {
-          part: 'snippet',
+          part: 'snippet,contentDetails,statistics',
           mine: true,
         },
         headers: {
@@ -407,6 +431,7 @@ const connect = async (userId, code, state) => {
     throw err;
   }
 };
+
 /**
  * Get all connections for a user.
  */
@@ -433,6 +458,7 @@ const getConnections = async (userId) => {
     provider: conn.provider,
   }));
 };
+
 /**
  * Get status for a specific provider connection.
  */
@@ -460,6 +486,7 @@ const getConnectionStatus = async (userId, providerId) => {
     id: conn.id,
   };
 };
+
 /**
  * Disconnect a connection.
  */
@@ -487,12 +514,14 @@ const disconnect = async (userId, connectionId) => {
   await conn.destroy();
   return { disconnected: true };
 };
+
 /**
  * Post video to a social provider.
- * Supports Instagram, Facebook (via page), and Pinterest (future).
- * YouTube posting is not yet implemented.
+ * Supports Instagram, Facebook (via page), and YouTube.
  */
 const postVideo = async (userId, providerId, videoUrl, mediaType, caption) => {
+  console.log('postVideo called:', { userId, providerId, videoUrl, mediaType });
+  
   const provider = await Provider.findByPk(providerId);
   if (!provider) {
     const err = new Error('Provider not found');
@@ -510,6 +539,8 @@ const postVideo = async (userId, providerId, videoUrl, mediaType, caption) => {
     throw err;
   }
   const { provider_key } = provider;
+  console.log('Provider key:', provider_key);
+
   // Get the user's connection for this provider
   const connection = await UserSocialConnection.findOne({
     where: { userId, providerId },
@@ -524,6 +555,7 @@ const postVideo = async (userId, providerId, videoUrl, mediaType, caption) => {
     err.status = 401;
     throw err;
   }
+
   // Delegate to provider-specific posting logic
   if (provider_key === 'instagram') {
     const { postReel } = require('./instagramService');
@@ -541,16 +573,129 @@ const postVideo = async (userId, providerId, videoUrl, mediaType, caption) => {
       video_url: videoUrl,
     };
   } else if (provider_key === 'youtube') {
-    // YouTube posting not yet implemented
-    const err = new Error('Posting to YouTube is not yet supported');
-    err.status = 400;
-    throw err;
+    // YouTube posting implementation using googleapis
+    const { google } = require('googleapis');
+    const credentials = provider.credentials || {};
+    
+    // Get access token with refresh if needed
+    let accessToken = connection.accessToken;
+    const expiresAt = connection.tokenExpiresAt ? new Date(connection.tokenExpiresAt).getTime() : 0;
+    const now = Date.now();
+    
+    // Refresh token if expired or close to expiry (5 minutes before)
+    if (connection.refreshToken && (expiresAt && now >= expiresAt - 5 * 60 * 1000)) {
+      try {
+        console.log('Refreshing YouTube token...');
+        const oauth2Client = new google.auth.OAuth2(
+          credentials.client_id,
+          credentials.client_secret,
+          credentials.redirect_uri
+        );
+        oauth2Client.setCredentials({
+          refresh_token: connection.refreshToken,
+        });
+        const { credentials: newCreds } = await oauth2Client.refreshAccessToken();
+        accessToken = newCreds.access_token;
+        const newExpiresAt = newCreds.expiry_date
+          ? new Date(newCreds.expiry_date)
+          : new Date(Date.now() + 3600 * 1000);
+        
+        await connection.update({
+          accessToken: accessToken,
+          tokenExpiresAt: newExpiresAt,
+          refreshToken: newCreds.refresh_token || connection.refreshToken,
+        });
+        console.log('YouTube token refreshed successfully');
+      } catch (err) {
+        console.error('Failed to refresh YouTube token:', err.message);
+        throw new Error('YouTube token expired. Please reconnect your YouTube account.');
+      }
+    }
+
+    const oauth2Client = new google.auth.OAuth2(
+      credentials.client_id,
+      credentials.client_secret,
+      credentials.redirect_uri
+    );
+    oauth2Client.setCredentials({ access_token: accessToken });
+
+    const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+
+    // Download video from Cloudinary / public URL into a stream
+    let videoResponse;
+    try {
+      console.log('Downloading video from:', videoUrl);
+      videoResponse = await axios.get(videoUrl, {
+        responseType: 'stream',
+        timeout: 120000,
+        maxContentLength: 2 * 1024 * 1024 * 1024, // 2GB
+      });
+      console.log('Video downloaded successfully');
+    } catch (dlErr) {
+      console.error('Failed to download video for YouTube upload:', dlErr.message);
+      throw new Error('Failed to download video from the provided URL. Ensure the Cloudinary URL is publicly accessible.');
+    }
+
+    const isShort = (mediaType || '').toUpperCase() === 'REELS' || (mediaType || '').toUpperCase() === 'SHORTS';
+    const videoTitle = (caption || 'Product Video').substring(0, 100);
+    let description = caption || '';
+    if (isShort && !description.toLowerCase().includes('#shorts')) {
+      description = `${description}\n\n#Shorts`.trim();
+    }
+
+    try {
+      console.log('Uploading to YouTube...', { videoTitle, isShort });
+      const res = await youtube.videos.insert({
+        part: ['snippet', 'status'],
+        requestBody: {
+          snippet: {
+            title: videoTitle,
+            description: description.substring(0, 5000),
+            categoryId: '22', // People & Blogs – safe default for product videos
+            tags: isShort ? ['Shorts', 'Product', 'Fashion'] : ['Product', 'Fashion'],
+          },
+          status: {
+            privacyStatus: 'public',
+            selfDeclaredMadeForKids: false,
+          },
+        },
+        media: {
+          body: videoResponse.data,
+        },
+      });
+
+      const videoId = res.data.id;
+      const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+      const shortsUrl = isShort ? `https://www.youtube.com/shorts/${videoId}` : null;
+
+      console.log('YouTube upload successful! Video ID:', videoId);
+
+      return {
+        media_id: videoId,
+        video_id: videoId,
+        url: isShort && shortsUrl ? shortsUrl : watchUrl,
+        watch_url: watchUrl,
+        is_short: isShort,
+        title: videoTitle,
+      };
+    } catch (ytErr) {
+      console.error('YouTube upload error:', ytErr.response?.data || ytErr.message);
+      const apiError = ytErr.response?.data?.error?.message || ytErr.message;
+      if (apiError && apiError.includes('quota')) {
+        throw new Error('YouTube API quota exceeded. Please try again later.');
+      }
+      if (apiError && (apiError.includes('invalid_grant') || apiError.includes('Token'))) {
+        throw new Error('YouTube authorization expired. Please reconnect your account.');
+      }
+      throw new Error(`YouTube upload failed: ${apiError || 'Unknown error'}`);
+    }
   } else {
     const err = new Error(`Posting to ${provider_key} is not yet supported`);
     err.status = 400;
     throw err;
   }
 };
+
 module.exports = {
   getOAuthUrl,
   connect,
