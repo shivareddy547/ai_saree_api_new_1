@@ -1,8 +1,9 @@
 const { Provider, UserSocialConnection, User } = require('../models');
 const { exchangeCodeForToken, getLongLivedToken, getInstagramUserInfo } = require('./instagramService');
+const { getOAuthUrl: getPinterestOAuthUrl, exchangeCodeForToken: exchangePinterestCode, getUserInfo: getPinterestUserInfo } = require('./pinterestService');
 /**
  * Build OAuth URL for a given provider.
- * Currently only supports Instagram, but can be extended.
+ * Supports Instagram and Pinterest.
  */
 const getOAuthUrl = async (providerId, userId) => {
   const provider = await Provider.findByPk(providerId);
@@ -32,6 +33,10 @@ const getOAuthUrl = async (providerId, userId) => {
     const scopeStr = scope || 'instagram_business_basic,instagram_business_content_publish';
     const url = `https://api.instagram.com/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&state=${providerId}`;
     return url;
+  } else if (provider_key === 'pinterest') {
+    const baseUrl = getPinterestOAuthUrl(credentials);
+    // Append state with providerId
+    return baseUrl + providerId;
   } else {
     const err = new Error(`Provider ${provider_key} not yet supported for OAuth`);
     err.status = 400;
@@ -40,6 +45,7 @@ const getOAuthUrl = async (providerId, userId) => {
 };
 /**
  * Exchange code for tokens and store connection.
+ * Supports Instagram and Pinterest.
  */
 const connect = async (userId, code, state) => {
   const providerId = state;
@@ -60,6 +66,7 @@ const connect = async (userId, code, state) => {
     throw err;
   }
   const { provider_key, credentials } = provider;
+  // --- Instagram ---
   if (provider_key === 'instagram') {
     const { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri } = credentials;
     if (!clientId || !clientSecret || !redirectUri) {
@@ -131,7 +138,71 @@ const connect = async (userId, code, state) => {
       accountType: userInfo.account_type || 'business',
       tokenExpiresAt: expiresAt,
     };
-  } else {
+  }
+  // --- Pinterest ---
+  else if (provider_key === 'pinterest') {
+    const { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri, environment } = credentials;
+    if (!clientId || !clientSecret || !redirectUri) {
+      const err = new Error('Missing Pinterest credentials');
+      err.status = 400;
+      throw err;
+    }
+    // Exchange code for token
+    let tokenData;
+    try {
+      tokenData = await exchangePinterestCode(code, redirectUri, clientId, clientSecret, environment || 'production');
+    } catch (error) {
+      console.error('Pinterest token exchange error:', error);
+      throw new Error('Failed to exchange Pinterest authorization code');
+    }
+    const accessToken = tokenData.access_token;
+    const refreshToken = tokenData.refresh_token;
+    const expiresIn = tokenData.expires_in; // in seconds
+    const expiresAt = new Date(Date.now() + expiresIn * 1000);
+    // Get user info
+    let userInfo;
+    try {
+      userInfo = await getPinterestUserInfo(accessToken);
+    } catch (error) {
+      console.error('Pinterest user info error:', error);
+      throw new Error('Failed to fetch Pinterest user info');
+    }
+    const username = userInfo.username || 'pinterest_user';
+    const accountId = userInfo.id;
+    // Store connection
+    const [connection, created] = await UserSocialConnection.findOrCreate({
+      where: { userId, providerId },
+      defaults: {
+        providerType: provider_key,
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        tokenExpiresAt: expiresAt,
+        accountId: accountId,
+        username: username,
+        accountType: 'pinterest',
+        metadata: { ...userInfo },
+      },
+    });
+    if (!created) {
+      await connection.update({
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        tokenExpiresAt: expiresAt,
+        accountId: accountId,
+        username: username,
+        metadata: { ...userInfo },
+      });
+    }
+    // Optionally store Pinterest fields on User if needed, but not required for now
+    return {
+      connected: true,
+      accountId: accountId,
+      username: username,
+      accountType: 'pinterest',
+      tokenExpiresAt: expiresAt,
+    };
+  }
+  else {
     const err = new Error(`Provider ${provider_key} not yet supported for connection`);
     err.status = 400;
     throw err;
@@ -202,6 +273,7 @@ const disconnect = async (userId, connectionId) => {
     err.status = 404;
     throw err;
   }
+  // If Instagram, clear user fields
   if (conn.providerType === 'instagram') {
     await User.update({
       instagramAccessToken: null,
@@ -213,6 +285,7 @@ const disconnect = async (userId, connectionId) => {
       where: { id: userId },
     });
   }
+  // For Pinterest, no user fields to clear (optional)
   await conn.destroy();
   return { disconnected: true };
 };
