@@ -390,7 +390,7 @@ const disconnect = async (userId, connectionId) => {
 };
 /**
  * Post video to a social provider.
- * Currently supports Instagram only, extendable to others.
+ * Supports Instagram, Facebook (via page), and Pinterest (future).
  */
 const postVideo = async (userId, providerId, videoUrl, mediaType, caption) => {
   const provider = await Provider.findByPk(providerId);
@@ -428,6 +428,20 @@ const postVideo = async (userId, providerId, videoUrl, mediaType, caption) => {
   if (provider_key === 'instagram') {
     const { postReel } = require('./instagramService');
     return await postReel(userId, videoUrl, mediaType, caption);
+  } else if (provider_key === 'facebook') {
+    // Facebook posting: use page access token
+    const userAccessToken = connection.accessToken;
+    // Use the caption as title and description
+    const title = caption || 'Video post';
+    const description = caption || '';
+    const result = await facebookService.postVideoToPage(userAccessToken, videoUrl, title, description);
+    return {
+      media_id: result.videoId,
+      post_id: result.postId,
+      page_id: result.pageId,
+      page_name: result.pageName,
+      video_url: videoUrl,
+    };
   } else {
     const err = new Error(`Posting to ${provider_key} is not yet supported`);
     err.status = 400;
