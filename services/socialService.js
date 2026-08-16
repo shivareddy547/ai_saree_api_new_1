@@ -1,9 +1,10 @@
 const { Provider, UserSocialConnection, User } = require('../models');
 const { exchangeCodeForToken, getLongLivedToken, getInstagramUserInfo } = require('./instagramService');
 const { getOAuthUrl: getPinterestOAuthUrl, exchangeCodeForToken: exchangePinterestCode, getUserInfo: getPinterestUserInfo } = require('./pinterestService');
+const facebookService = require('./facebookService');
 /**
  * Build OAuth URL for a given provider.
- * Supports Instagram and Pinterest.
+ * Supports Instagram, Pinterest, and Facebook.
  */
 const getOAuthUrl = async (providerId, userId) => {
   const provider = await Provider.findByPk(providerId);
@@ -24,7 +25,10 @@ const getOAuthUrl = async (providerId, userId) => {
   }
   const { provider_key, credentials } = provider;
   if (provider_key === 'instagram') {
-    const { app_id: clientId, redirect_uri: redirectUri, scope } = credentials;
+    let { app_id: clientId, redirect_uri: redirectUri, scope } = credentials;
+    clientId = clientId ? clientId.trim() : '';
+    redirectUri = redirectUri ? redirectUri.trim() : '';
+    scope = scope ? scope.trim() : '';
     if (!clientId || !redirectUri) {
       const err = new Error('Missing required credentials for Instagram');
       err.status = 400;
@@ -35,8 +39,28 @@ const getOAuthUrl = async (providerId, userId) => {
     return url;
   } else if (provider_key === 'pinterest') {
     const baseUrl = getPinterestOAuthUrl(credentials);
-    // Append state with providerId
     return baseUrl + providerId;
+  } else if (provider_key === 'facebook') {
+    let { app_id: clientId, redirect_uri: redirectUri, scope } = credentials;
+    clientId = clientId ? clientId.trim() : '';
+    redirectUri = redirectUri ? redirectUri.trim() : '';
+    scope = scope ? scope.trim() : '';
+    if (!clientId || !redirectUri) {
+      const err = new Error('Missing required credentials for Facebook');
+      err.status = 400;
+      throw err;
+    }
+    // Validate app_id is numeric
+    if (!/^\d+$/.test(clientId)) {
+      const err = new Error('Invalid Facebook App ID. Please check your credentials.');
+      err.status = 400;
+      throw err;
+    }
+    const scopeStr = scope || 'pages_manage_posts,pages_read_engagement';
+    const url = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopeStr)}&state=${providerId}`;
+    // Log the generated URL for debugging
+    console.log('Facebook OAuth URL:', url);
+    return url;
   } else {
     const err = new Error(`Provider ${provider_key} not yet supported for OAuth`);
     err.status = 400;
@@ -45,7 +69,7 @@ const getOAuthUrl = async (providerId, userId) => {
 };
 /**
  * Exchange code for tokens and store connection.
- * Supports Instagram and Pinterest.
+ * Supports Instagram, Pinterest, and Facebook.
  */
 const connect = async (userId, code, state) => {
   const providerId = state;
@@ -68,7 +92,10 @@ const connect = async (userId, code, state) => {
   const { provider_key, credentials } = provider;
   // --- Instagram ---
   if (provider_key === 'instagram') {
-    const { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri } = credentials;
+    let { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri } = credentials;
+    clientId = clientId ? clientId.trim() : '';
+    clientSecret = clientSecret ? clientSecret.trim() : '';
+    redirectUri = redirectUri ? redirectUri.trim() : '';
     if (!clientId || !clientSecret || !redirectUri) {
       const err = new Error('Missing Instagram credentials');
       err.status = 400;
@@ -141,25 +168,27 @@ const connect = async (userId, code, state) => {
   }
   // --- Pinterest ---
   else if (provider_key === 'pinterest') {
-    const { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri, environment } = credentials;
+    let { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri, environment } = credentials;
+    clientId = clientId ? clientId.trim() : '';
+    clientSecret = clientSecret ? clientSecret.trim() : '';
+    redirectUri = redirectUri ? redirectUri.trim() : '';
+    environment = environment ? environment.trim() : 'production';
     if (!clientId || !clientSecret || !redirectUri) {
       const err = new Error('Missing Pinterest credentials');
       err.status = 400;
       throw err;
     }
-    // Exchange code for token
     let tokenData;
     try {
-      tokenData = await exchangePinterestCode(code, redirectUri, clientId, clientSecret, environment || 'production');
+      tokenData = await exchangePinterestCode(code, redirectUri, clientId, clientSecret, environment);
     } catch (error) {
       console.error('Pinterest token exchange error:', error);
       throw new Error('Failed to exchange Pinterest authorization code');
     }
     const accessToken = tokenData.access_token;
     const refreshToken = tokenData.refresh_token;
-    const expiresIn = tokenData.expires_in; // in seconds
+    const expiresIn = tokenData.expires_in;
     const expiresAt = new Date(Date.now() + expiresIn * 1000);
-    // Get user info
     let userInfo;
     try {
       userInfo = await getPinterestUserInfo(accessToken);
@@ -169,7 +198,6 @@ const connect = async (userId, code, state) => {
     }
     const username = userInfo.username || 'pinterest_user';
     const accountId = userInfo.id;
-    // Store connection
     const [connection, created] = await UserSocialConnection.findOrCreate({
       where: { userId, providerId },
       defaults: {
@@ -193,12 +221,83 @@ const connect = async (userId, code, state) => {
         metadata: { ...userInfo },
       });
     }
-    // Optionally store Pinterest fields on User if needed, but not required for now
     return {
       connected: true,
       accountId: accountId,
       username: username,
       accountType: 'pinterest',
+      tokenExpiresAt: expiresAt,
+    };
+  }
+  // --- Facebook ---
+  else if (provider_key === 'facebook') {
+    let { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri } = credentials;
+    clientId = clientId ? clientId.trim() : '';
+    clientSecret = clientSecret ? clientSecret.trim() : '';
+    redirectUri = redirectUri ? redirectUri.trim() : '';
+    if (!clientId || !clientSecret || !redirectUri) {
+      const err = new Error('Missing Facebook credentials');
+      err.status = 400;
+      throw err;
+    }
+    if (!/^\d+$/.test(clientId)) {
+      const err = new Error('Invalid Facebook App ID. Please check your credentials.');
+      err.status = 400;
+      throw err;
+    }
+    let tokenData;
+    try {
+      tokenData = await facebookService.exchangeCodeForToken(code, redirectUri, clientId, clientSecret);
+    } catch (error) {
+      console.error('Facebook token exchange error:', error);
+      throw new Error('Failed to exchange Facebook authorization code');
+    }
+    const shortToken = tokenData.access_token;
+    let longLivedData;
+    try {
+      longLivedData = await facebookService.getLongLivedToken(shortToken, clientId, clientSecret);
+    } catch (error) {
+      console.error('Facebook long-lived token error:', error);
+      throw new Error('Failed to get long-lived Facebook token');
+    }
+    let userInfo;
+    try {
+      userInfo = await facebookService.getUserInfo(longLivedData.access_token);
+    } catch (error) {
+      console.error('Facebook user info error:', error);
+      throw new Error('Failed to fetch Facebook user info');
+    }
+    const expiresIn = longLivedData.expires_in || 60 * 24 * 60 * 60; // default 60 days
+    const expiresAt = new Date(Date.now() + expiresIn * 1000);
+    const accountId = userInfo.id;
+    const username = userInfo.name || userInfo.email || 'facebook_user';
+    const [connection, created] = await UserSocialConnection.findOrCreate({
+      where: { userId, providerId },
+      defaults: {
+        providerType: provider_key,
+        accessToken: longLivedData.access_token,
+        refreshToken: null,
+        tokenExpiresAt: expiresAt,
+        accountId: accountId,
+        username: username,
+        accountType: 'facebook',
+        metadata: { ...userInfo },
+      },
+    });
+    if (!created) {
+      await connection.update({
+        accessToken: longLivedData.access_token,
+        tokenExpiresAt: expiresAt,
+        accountId: accountId,
+        username: username,
+        metadata: { ...userInfo },
+      });
+    }
+    return {
+      connected: true,
+      accountId: accountId,
+      username: username,
+      accountType: 'facebook',
       tokenExpiresAt: expiresAt,
     };
   }
@@ -285,7 +384,7 @@ const disconnect = async (userId, connectionId) => {
       where: { id: userId },
     });
   }
-  // For Pinterest, no user fields to clear (optional)
+  // For Facebook and Pinterest, no user fields to clear (optional)
   await conn.destroy();
   return { disconnected: true };
 };
