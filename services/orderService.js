@@ -1,37 +1,45 @@
 const { Order, OrderItem, Product, ProductVariant, ProductImage, sequelize } = require('../models');
 const cartService = require('./cartService');
+
 class OrderService {
-  async createOrder(userId, shippingAddress, paymentMethod) {
+  async createOrder(userId, shippingAddress, paymentMethod, billingAddress) {
     const transaction = await sequelize.transaction();
     try {
-      // cartService.getCart returns an array of cart items (not { items })
       const items = await cartService.getCart(userId);
+
       if (!items || items.length === 0) {
         const err = new Error('Cart is empty');
         err.status = 400;
         throw err;
       }
+
       let total = 0;
       const orderItemsData = [];
       const stockErrors = [];
+
       for (const item of items) {
         const productId = item.productId || item.product?.id;
         const variantId = item.variantId || item.variant?.id;
         const quantity = item.quantity || 1;
+
         const product = await Product.findByPk(productId, {
           include: [{ model: ProductVariant, as: 'variants' }],
           transaction,
         });
+
         if (!product) {
           stockErrors.push(`Product not found: ${item.product?.name || 'Unknown'}`);
           continue;
         }
+
         const variants = product.variants || [];
         const hasRealVariants =
           variants.length > 1 ||
           (variants.length === 1 && (variants[0].size || variants[0].color));
+
         let availableStock;
         let stockSource;
+
         if (hasRealVariants) {
           const variant = variants.find((v) => v.id === variantId);
           if (!variant) {
@@ -44,6 +52,7 @@ class OrderService {
           availableStock = product.stockQuantity || 0;
           stockSource = product;
         }
+
         if (availableStock < quantity) {
           const productName = product.name || 'Product';
           let variantInfo = '';
@@ -63,6 +72,7 @@ class OrderService {
           );
           continue;
         }
+
         if (hasRealVariants) {
           const variant = stockSource;
           variant.stockQuantity = availableStock - quantity;
@@ -71,9 +81,11 @@ class OrderService {
           product.stockQuantity = availableStock - quantity;
           await product.save({ transaction });
         }
+
         const price = hasRealVariants
           ? parseFloat(stockSource.price)
           : parseFloat(product.basePrice || 0);
+
         const costPrice = hasRealVariants
           ? stockSource.costPrice
             ? parseFloat(stockSource.costPrice)
@@ -81,8 +93,10 @@ class OrderService {
           : product.costPrice
           ? parseFloat(product.costPrice)
           : null;
+
         const itemTotal = price * quantity;
         total += itemTotal;
+
         orderItemsData.push({
           productId,
           variantId,
@@ -91,6 +105,7 @@ class OrderService {
           costPrice,
         });
       }
+
       if (stockErrors.length > 0) {
         const errorMessage = `Insufficient stock for the following items:\n${stockErrors.join(
           '\n'
@@ -99,21 +114,25 @@ class OrderService {
         err.status = 400;
         throw err;
       }
+
       if (orderItemsData.length === 0) {
         const err = new Error('Cart is empty');
         err.status = 400;
         throw err;
       }
+
       const order = await Order.create(
         {
           userId,
           total,
           status: 'pending',
           shippingAddress,
+          billingAddress: billingAddress || shippingAddress,
           paymentMethod,
         },
         { transaction }
       );
+
       for (const data of orderItemsData) {
         await OrderItem.create(
           {
@@ -123,6 +142,7 @@ class OrderService {
           { transaction }
         );
       }
+
       await cartService.clearCart(userId);
       await transaction.commit();
       return order;
@@ -131,6 +151,7 @@ class OrderService {
       throw error;
     }
   }
+
   async getOrders(userId) {
     return await Order.findAll({
       where: { userId },
@@ -151,6 +172,7 @@ class OrderService {
       ],
     });
   }
+
   async getOrder(userId, orderId) {
     const order = await Order.findOne({
       where: { id: orderId, userId },
@@ -169,12 +191,15 @@ class OrderService {
         },
       ],
     });
+
     if (!order) {
       const err = new Error('Order not found');
       err.status = 404;
       throw err;
     }
+
     return order;
   }
 }
+
 module.exports = new OrderService();
