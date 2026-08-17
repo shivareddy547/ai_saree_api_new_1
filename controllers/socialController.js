@@ -24,17 +24,15 @@ exports.getOAuthUrl = async (req, res, next) => {
 exports.connect = async (req, res, next) => {
   try {
     const { code, state, provider } = req.body;
-    
+
     console.log('Connect request body:', { code: code ? 'present' : 'missing', state, provider });
-    
+
     if (!code) {
       const err = new Error('Authorization code is required');
       err.status = 400;
       throw err;
     }
 
-    // If state is missing but provider is provided, use the provider as state
-    // This handles the case where the frontend sends provider separately
     let finalState = state;
     if (!finalState && provider) {
       console.log('State missing, using provider as state:', provider);
@@ -154,5 +152,32 @@ exports.postToSocial = async (req, res, next) => {
       message: message,
       timestamp: Date.now()
     });
+  }
+};
+
+/**
+ * Get live stats for a provider (Total Videos, Total Views, Conversion Rate)
+ * Uses the stored access token to fetch real data from the platform.
+ */
+exports.getProviderStats = async (req, res, next) => {
+  try {
+    const { providerId } = req.params;
+    const userId = req.user.id;
+
+    if (!providerId) {
+      const err = new Error('providerId is required');
+      err.status = 400;
+      throw err;
+    }
+
+    const stats = await socialService.getProviderStats(userId, providerId);
+    res.status(200).json({
+      success: true,
+      data: stats,
+      message: 'Provider stats fetched',
+    });
+  } catch (error) {
+    console.error('Provider stats error:', error);
+    next(error);
   }
 };
