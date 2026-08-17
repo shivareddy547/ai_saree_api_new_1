@@ -1,0 +1,12 @@
+const express = require('express');
+const router = express.Router();
+const addressController = require('../controllers/addressController');
+const { authMiddleware } = require('../middleware/authMiddleware');
+router.use(authMiddleware);
+router.get('/', addressController.listAddresses);
+router.get('/:id', addressController.getAddress);
+router.post('/', addressController.createAddress);
+router.put('/:id', addressController.updateAddress);
+router.delete('/:id', addressController.deleteAddress);
+router.patch('/:id/default', addressController.setDefault);
+module.exports = router;
