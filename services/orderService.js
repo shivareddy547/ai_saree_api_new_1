@@ -1,4 +1,5 @@
-const { Order, OrderItem, Product, ProductVariant, ProductImage, sequelize } = require('../models');
+const { Order, OrderItem, Product, ProductVariant, ProductImage, User, sequelize } = require('../models');
+const { Op } = require('sequelize');
 const cartService = require('./cartService');
 const paymentService = require('./paymentService');
 class OrderService {
@@ -104,7 +105,6 @@ class OrderService {
         err.status = 400;
         throw err;
       }
-      // Apply COD extra charge if applicable
       let paymentStatus = 'pending';
       let provider = null;
       let finalPaymentMethod = paymentMethod || 'COD';
@@ -159,13 +159,10 @@ class OrderService {
           { transaction }
         );
       }
-      // Only clear cart if not a redirect-based payment (phonepe)
-      // For phonepe, we keep the cart until payment is verified successfully.
       if (!provider || provider.provider_key !== 'phonepe') {
         await cartService.clearCart(userId);
       }
       await transaction.commit();
-      // For PhonePe: initiate payment after commit
       if (provider && provider.provider_key === 'phonepe') {
         const redirectUrl =
           redirectBaseUrl ||
@@ -185,7 +182,6 @@ class OrderService {
             merchantOrderId: payResult.merchantOrderId,
           };
         } catch (payErr) {
-          // Mark failed but keep order (cart still intact because we didn't clear it)
           await order.update({ paymentStatus: 'failed', paymentDetails: { error: payErr.message } });
           throw payErr;
         }
@@ -258,6 +254,191 @@ class OrderService {
       return await paymentService.verifyPhonePePayment(order);
     }
     return { paid: false, state: order.paymentStatus, order };
+  }
+  async getAllOrdersAdmin(filters = {}) {
+    const {
+      status,
+      paymentStatus,
+      search,
+      startDate,
+      endDate,
+      page = 1,
+      limit = 20,
+    } = filters;
+    const where = {};
+    if (status) {
+      where.status = status;
+    }
+    if (paymentStatus) {
+      where.paymentStatus = paymentStatus;
+    }
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) {
+        where.createdAt[Op.gte] = new Date(startDate);
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        where.createdAt[Op.lte] = end;
+      }
+    }
+    if (search) {
+      const searchNum = parseInt(search, 10);
+      if (!isNaN(searchNum)) {
+        where[Op.or] = [
+          { id: searchNum },
+          { merchantOrderId: { [Op.iLike]: `%${search}%` } },
+        ];
+      } else {
+        where[Op.or] = [
+          { merchantOrderId: { [Op.iLike]: `%${search}%` } },
+        ];
+      }
+    }
+    const offset = (Math.max(1, parseInt(page, 10)) - 1) * Math.min(100, Math.max(1, parseInt(limit, 10)));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+    const { count, rows } = await Order.findAndCountAll({
+      where,
+      order: [['createdAt', 'DESC']],
+      limit: limitNum,
+      offset,
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'fullName', 'email', 'phone', 'role'],
+        },
+        {
+          model: OrderItem,
+          as: 'items',
+          include: [
+            {
+              model: Product,
+              as: 'product',
+              attributes: ['id', 'name'],
+              include: [{ model: ProductImage, as: 'images', attributes: ['url'], limit: 1 }],
+            },
+            {
+              model: ProductVariant,
+              as: 'variant',
+              attributes: ['id', 'size', 'color', 'sku'],
+            },
+          ],
+        },
+      ],
+      distinct: true,
+    });
+    return {
+      orders: rows,
+      pagination: {
+        page: Math.max(1, parseInt(page, 10)),
+        limit: limitNum,
+        total: count,
+        totalPages: Math.ceil(count / limitNum) || 1,
+      },
+    };
+  }
+  async getOrderAdmin(orderId) {
+    const order = await Order.findByPk(orderId, {
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'fullName', 'email', 'phone', 'role', 'createdAt'],
+        },
+        {
+          model: OrderItem,
+          as: 'items',
+          include: [
+            {
+              model: Product,
+              as: 'product',
+              include: [{ model: ProductImage, as: 'images' }],
+            },
+            { model: ProductVariant, as: 'variant' },
+          ],
+        },
+      ],
+    });
+    if (!order) {
+      const err = new Error('Order not found');
+      err.status = 404;
+      throw err;
+    }
+    return order;
+  }
+  async cancelOrderAdmin(orderId, reason) {
+    if (!reason || !String(reason).trim()) {
+      const err = new Error('Cancellation reason is required');
+      err.status = 400;
+      throw err;
+    }
+    const order = await Order.findByPk(orderId);
+    if (!order) {
+      const err = new Error('Order not found');
+      err.status = 404;
+      throw err;
+    }
+    if (order.status === 'cancelled') {
+      const err = new Error('Order is already cancelled');
+      err.status = 400;
+      throw err;
+    }
+    if (order.status === 'delivered') {
+      const err = new Error('Cannot cancel a delivered order');
+      err.status = 400;
+      throw err;
+    }
+    await order.update({
+      status: 'cancelled',
+      cancellationReason: String(reason).trim(),
+    });
+    return order;
+  }
+  async shipOrderAdmin(orderId, trackingUrl) {
+    if (!trackingUrl || !String(trackingUrl).trim()) {
+      const err = new Error('Tracking URL is required');
+      err.status = 400;
+      throw err;
+    }
+    const order = await Order.findByPk(orderId);
+    if (!order) {
+      const err = new Error('Order not found');
+      err.status = 404;
+      throw err;
+    }
+    if (order.status === 'cancelled') {
+      const err = new Error('Cannot ship a cancelled order');
+      err.status = 400;
+      throw err;
+    }
+    if (order.status === 'delivered') {
+      const err = new Error('Order is already delivered');
+      err.status = 400;
+      throw err;
+    }
+    await order.update({
+      status: 'shipped',
+      trackingUrl: String(trackingUrl).trim(),
+    });
+    return order;
+  }
+  async updateOrderStatusAdmin(orderId, status) {
+    const allowed = ['pending', 'processing', 'shipped', 'delivered', 'cancelled'];
+    if (!allowed.includes(status)) {
+      const err = new Error('Invalid status');
+      err.status = 400;
+      throw err;
+    }
+    const order = await Order.findByPk(orderId);
+    if (!order) {
+      const err = new Error('Order not found');
+      err.status = 404;
+      throw err;
+    }
+    await order.update({ status });
+    return order;
   }
 }
 module.exports = new OrderService();

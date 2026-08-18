@@ -59,6 +59,14 @@ module.exports = (sequelize) => {
         allowNull: true,
         defaultValue: {},
       },
+      cancellationReason: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
+      trackingUrl: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
     },
     {
       sequelize,

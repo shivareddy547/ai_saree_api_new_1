@@ -86,5 +86,77 @@ class OrderController {
       next(error);
     }
   }
+  async getAllOrdersAdmin(req, res, next) {
+    try {
+      const filters = {
+        status: req.query.status || undefined,
+        paymentStatus: req.query.paymentStatus || undefined,
+        search: req.query.search || undefined,
+        startDate: req.query.startDate || undefined,
+        endDate: req.query.endDate || undefined,
+        page: req.query.page || 1,
+        limit: req.query.limit || 20,
+      };
+      const result = await orderService.getAllOrdersAdmin(filters);
+      res.status(200).json({
+        success: true,
+        data: result.orders,
+        pagination: result.pagination,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+  async getOrderAdmin(req, res, next) {
+    try {
+      const { id } = req.params;
+      const order = await orderService.getOrderAdmin(id);
+      res.status(200).json({ success: true, data: order });
+    } catch (error) {
+      next(error);
+    }
+  }
+  async cancelOrderAdmin(req, res, next) {
+    try {
+      const { id } = req.params;
+      const { reason } = req.body;
+      const order = await orderService.cancelOrderAdmin(id, reason);
+      res.status(200).json({
+        success: true,
+        data: order,
+        message: 'Order cancelled successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+  async shipOrderAdmin(req, res, next) {
+    try {
+      const { id } = req.params;
+      const { trackingUrl } = req.body;
+      const order = await orderService.shipOrderAdmin(id, trackingUrl);
+      res.status(200).json({
+        success: true,
+        data: order,
+        message: 'Order marked as shipped',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+  async updateOrderStatusAdmin(req, res, next) {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
+      const order = await orderService.updateOrderStatusAdmin(id, status);
+      res.status(200).json({
+        success: true,
+        data: order,
+        message: 'Order status updated',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 module.exports = new OrderController();
