@@ -159,7 +159,11 @@ class OrderService {
           { transaction }
         );
       }
-      await cartService.clearCart(userId);
+      // Only clear cart if not a redirect-based payment (phonepe)
+      // For phonepe, we keep the cart until payment is verified successfully.
+      if (!provider || provider.provider_key !== 'phonepe') {
+        await cartService.clearCart(userId);
+      }
       await transaction.commit();
       // For PhonePe: initiate payment after commit
       if (provider && provider.provider_key === 'phonepe') {
@@ -181,7 +185,7 @@ class OrderService {
             merchantOrderId: payResult.merchantOrderId,
           };
         } catch (payErr) {
-          // Mark failed but keep order
+          // Mark failed but keep order (cart still intact because we didn't clear it)
           await order.update({ paymentStatus: 'failed', paymentDetails: { error: payErr.message } });
           throw payErr;
         }
