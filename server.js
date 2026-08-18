@@ -74,6 +74,7 @@ app.use('/api/providers', require('./routes/providerRoutes'));
 app.use('/api/social', require('./routes/socialRoutes'));  // NEW
 app.use('/api/categories', require('./routes/categoryRoutes'));
 app.use('/api/store', require('./routes/storeRoutes'));
+app.use('/api/store-settings', require('./routes/storeSettingsRoutes'));
 app.use('/api/cart', require('./routes/cartRoutes'));
 app.use('/api', require('./routes/productRoutes'));
 app.use('/api/instagram', require('./routes/instagramRoutes'));
