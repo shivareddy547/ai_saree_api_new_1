@@ -491,7 +491,7 @@ const disconnect = async (userId, connectionId) => {
  * Post video to a social provider.
  * Supports Instagram, Facebook, and YouTube.
  */
-const postVideo = async (userId, providerId, videoUrl, mediaType, caption) => {
+const postVideo = async (userId, providerId, videoUrl, mediaType, caption, title, privacyStatus) => {
   const { provider, connection } = await getProviderAndConnection(userId, providerId);
   if (!connection || !connection.accessToken) {
     const err = new Error('No connected account found for this provider');
@@ -508,9 +508,9 @@ const postVideo = async (userId, providerId, videoUrl, mediaType, caption) => {
     const { postReel } = require('./instagramService');
     return await postReel(userId, videoUrl, mediaType, caption);
   } else if (provider_key === 'facebook') {
-    const title = caption || 'Video post';
+    const postTitle = caption || 'Video post';
     const description = caption || '';
-    const result = await facebookService.postVideoToPage(connection.accessToken, videoUrl, title, description);
+    const result = await facebookService.postVideoToPage(connection.accessToken, videoUrl, postTitle, description);
     return {
       media_id: result.videoId,
       post_id: result.postId,
@@ -519,21 +519,26 @@ const postVideo = async (userId, providerId, videoUrl, mediaType, caption) => {
       video_url: videoUrl,
     };
   } else if (provider_key === 'youtube') {
-    const title = caption || 'Product Video';
+    const finalTitle = (title && title.trim()) || (caption && caption.trim()) || 'Product Video';
     const description = caption || '';
     const isShort = mediaType === 'REELS';
+    const allowedPrivacy = ['public', 'unlisted', 'private'];
+    const finalPrivacyStatus = allowedPrivacy.includes(privacyStatus) ? privacyStatus : 'public';
     const result = await youtubeService.uploadVideo(
       connection.accessToken,
       videoUrl,
-      title,
+      finalTitle,
       description,
-      isShort
+      isShort,
+      finalPrivacyStatus
     );
     return {
       video_id: result.videoId,
       video_url: result.videoUrl,
-      title: title,
+      url: result.videoUrl,
+      title: finalTitle,
       is_short: isShort,
+      privacyStatus: finalPrivacyStatus,
     };
   } else {
     const err = new Error(`Posting to ${provider_key} is not yet supported`);

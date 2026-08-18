@@ -115,10 +115,10 @@ exports.disconnect = async (req, res, next) => {
  */
 exports.postToSocial = async (req, res, next) => {
   try {
-    const { providerId, video_url, media_type = 'REELS', caption = '' } = req.body;
+    const { providerId, video_url, media_type = 'REELS', caption = '', title, privacyStatus } = req.body;
     const userId = req.user.id;
 
-    console.log('Social post request:', { userId, providerId, video_url, media_type });
+    console.log('Social post request:', { userId, providerId, video_url, media_type, title, privacyStatus });
 
     if (!providerId) {
       const err = new Error('providerId is required');
@@ -136,7 +136,7 @@ exports.postToSocial = async (req, res, next) => {
       throw err;
     }
 
-    const result = await socialService.postVideo(userId, providerId, video_url, media_type, caption);
+    const result = await socialService.postVideo(userId, providerId, video_url, media_type, caption, title, privacyStatus);
     res.status(200).json({
       success: true,
       data: result,
