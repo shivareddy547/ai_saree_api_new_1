@@ -1,5 +1,4 @@
 const { Model, DataTypes } = require('sequelize');
-
 module.exports = (sequelize) => {
   class Order extends Model {
     static associate(models) {
@@ -7,7 +6,6 @@ module.exports = (sequelize) => {
       Order.hasMany(models.OrderItem, { foreignKey: 'orderId', as: 'items' });
     }
   }
-
   Order.init(
     {
       id: {
@@ -43,6 +41,24 @@ module.exports = (sequelize) => {
         type: DataTypes.STRING,
         allowNull: true,
       },
+      paymentStatus: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        defaultValue: 'pending',
+      },
+      paymentProviderId: {
+        type: DataTypes.UUID,
+        allowNull: true,
+      },
+      merchantOrderId: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      paymentDetails: {
+        type: DataTypes.JSONB,
+        allowNull: true,
+        defaultValue: {},
+      },
     },
     {
       sequelize,
@@ -51,6 +67,5 @@ module.exports = (sequelize) => {
       timestamps: true,
     }
   );
-
   return Order;
 };
