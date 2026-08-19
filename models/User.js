@@ -7,6 +7,9 @@ module.exports = (sequelize) => {
       User.hasMany(models.Order, { foreignKey: 'userId', as: 'orders' });
       User.hasMany(models.WishlistItem, { foreignKey: 'userId', as: 'wishlist' });
       User.hasMany(models.UserVoice, { foreignKey: 'userId', as: 'voices' });
+      if (models.Address) {
+        User.hasMany(models.Address, { foreignKey: 'user_id', as: 'addresses' });
+      }
     }
   }
   User.init({
@@ -49,6 +52,11 @@ module.exports = (sequelize) => {
       defaultValue: 'user',
       allowNull: false,
     },
+    isActive: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
+    },
     instagramAccessToken: {
       type: DataTypes.STRING,
       allowNull: true,
@@ -73,6 +81,7 @@ module.exports = (sequelize) => {
     sequelize,
     modelName: 'User',
     tableName: 'users',
+    timestamps: true,
   });
   return User;
 };
