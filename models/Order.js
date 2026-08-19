@@ -67,6 +67,48 @@ module.exports = (sequelize) => {
         type: DataTypes.STRING,
         allowNull: true,
       },
+      shippingAmount: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
+        defaultValue: 0,
+      },
+      estimatedDeliveryDays: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+      },
+      shipmentProviderId: {
+        type: DataTypes.UUID,
+        allowNull: true,
+      },
+      courierCompanyId: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      courierName: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      shiprocketOrderId: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      shiprocketShipmentId: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      awbCode: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      shipmentStatus: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      shipmentDetails: {
+        type: DataTypes.JSONB,
+        allowNull: true,
+        defaultValue: {},
+      },
     },
     {
       sequelize,

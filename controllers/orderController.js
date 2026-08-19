@@ -1,5 +1,6 @@
 const orderService = require('../services/orderService');
 const paymentService = require('../services/paymentService');
+const shipmentService = require('../services/shipmentService');
 class OrderController {
   async createOrder(req, res, next) {
     try {
@@ -10,6 +11,12 @@ class OrderController {
         paymentMethod,
         paymentProviderId,
         redirectBaseUrl,
+        shippingAmount,
+        estimatedDeliveryDays,
+        shipmentProviderId,
+        courierCompanyId,
+        courierName,
+        shippingAddressObj,
       } = req.body;
       if (!shippingAddress) {
         const err = new Error('Shipping address is required');
@@ -22,7 +29,15 @@ class OrderController {
         paymentMethod,
         billingAddress || shippingAddress,
         paymentProviderId || null,
-        redirectBaseUrl || null
+        redirectBaseUrl || null,
+        {
+          shippingAmount,
+          estimatedDeliveryDays,
+          shipmentProviderId,
+          courierCompanyId,
+          courierName,
+          shippingAddressObj: shippingAddressObj || {},
+        }
       );
       res.status(201).json({
         success: true,
@@ -32,6 +47,24 @@ class OrderController {
         message: result.paymentRequired
           ? 'Order created. Redirect to payment gateway.'
           : 'Order placed successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+  async getShippingRates(req, res, next) {
+    try {
+      const { deliveryPincode, weight, cod, declaredValue } = req.body;
+      const result = await shipmentService.getShippingRates({
+        deliveryPincode,
+        weight,
+        cod: !!cod,
+        declaredValue: declaredValue || 0,
+      });
+      res.status(200).json({
+        success: true,
+        data: result,
+        message: 'Shipping rates fetched',
       });
     } catch (error) {
       next(error);

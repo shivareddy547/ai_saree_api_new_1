@@ -13,6 +13,7 @@ const requireAdmin = (req, res, next) => {
 };
 router.use(authMiddleware);
 router.get('/payment-providers', orderController.getPaymentProviders);
+router.post('/shipping-rates', orderController.getShippingRates);
 router.get('/admin/all', requireAdmin, orderController.getAllOrdersAdmin);
 router.get('/admin/:id', requireAdmin, orderController.getOrderAdmin);
 router.post('/admin/:id/cancel', requireAdmin, orderController.cancelOrderAdmin);

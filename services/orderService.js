@@ -2,8 +2,17 @@ const { Order, OrderItem, Product, ProductVariant, ProductImage, User, sequelize
 const { Op } = require('sequelize');
 const cartService = require('./cartService');
 const paymentService = require('./paymentService');
+const shipmentService = require('./shipmentService');
 class OrderService {
-  async createOrder(userId, shippingAddress, paymentMethod, billingAddress, paymentProviderId = null, redirectBaseUrl = null) {
+  async createOrder(
+    userId,
+    shippingAddress,
+    paymentMethod,
+    billingAddress,
+    paymentProviderId = null,
+    redirectBaseUrl = null,
+    shipmentOptions = {}
+  ) {
     const transaction = await sequelize.transaction();
     try {
       const items = await cartService.getCart(userId);
@@ -105,6 +114,9 @@ class OrderService {
         err.status = 400;
         throw err;
       }
+      // Shipping amount from selected courier
+      const shippingAmount = parseFloat(shipmentOptions.shippingAmount) || 0;
+      total += shippingAmount;
       let paymentStatus = 'pending';
       let provider = null;
       let finalPaymentMethod = paymentMethod || 'COD';
@@ -147,6 +159,17 @@ class OrderService {
           paymentProviderId: provider ? provider.id : null,
           merchantOrderId,
           paymentDetails: {},
+          shippingAmount,
+          estimatedDeliveryDays: shipmentOptions.estimatedDeliveryDays
+            ? parseInt(shipmentOptions.estimatedDeliveryDays, 10)
+            : null,
+          shipmentProviderId: shipmentOptions.shipmentProviderId || null,
+          courierCompanyId: shipmentOptions.courierCompanyId
+            ? String(shipmentOptions.courierCompanyId)
+            : null,
+          courierName: shipmentOptions.courierName || null,
+          shipmentStatus: shipmentOptions.courierName ? 'pending' : null,
+          shipmentDetails: shipmentOptions.shipmentDetails || {},
         },
         { transaction }
       );
@@ -163,6 +186,45 @@ class OrderService {
         await cartService.clearCart(userId);
       }
       await transaction.commit();
+      // Create Shiprocket shipment after local order is committed (non-blocking for payment flow)
+      if (shipmentOptions.courierCompanyId || shipmentOptions.courierName) {
+        try {
+          const fullOrder = await Order.findByPk(order.id, {
+            include: [
+              {
+                model: OrderItem,
+                as: 'items',
+                include: [
+                  { model: Product, as: 'product' },
+                  { model: ProductVariant, as: 'variant' },
+                ],
+              },
+            ],
+          });
+          const addrObj = shipmentOptions.shippingAddressObj || {};
+          const srResult = await shipmentService.createShiprocketOrder(
+            fullOrder,
+            fullOrder.items,
+            addrObj,
+            {
+              courierCompanyId: shipmentOptions.courierCompanyId,
+              courierName: shipmentOptions.courierName,
+            }
+          );
+          await fullOrder.update({
+            shiprocketOrderId: srResult.shiprocketOrderId,
+            shiprocketShipmentId: srResult.shiprocketShipmentId,
+            awbCode: srResult.awbCode,
+            shipmentStatus: srResult.status || 'created',
+            shipmentDetails: {
+              ...(fullOrder.shipmentDetails || {}),
+              shiprocket: srResult.raw || srResult,
+            },
+          });
+        } catch (srErr) {
+          console.error('Shiprocket order creation failed (order still placed):', srErr.message);
+        }
+      }
       if (provider && provider.provider_key === 'phonepe') {
         const redirectUrl =
           redirectBaseUrl ||
@@ -182,7 +244,10 @@ class OrderService {
             merchantOrderId: payResult.merchantOrderId,
           };
         } catch (payErr) {
-          await order.update({ paymentStatus: 'failed', paymentDetails: { error: payErr.message } });
+          await order.update({
+            paymentStatus: 'failed',
+            paymentDetails: { error: payErr.message },
+          });
           throw payErr;
         }
       }
@@ -296,7 +361,9 @@ class OrderService {
         ];
       }
     }
-    const offset = (Math.max(1, parseInt(page, 10)) - 1) * Math.min(100, Math.max(1, parseInt(limit, 10)));
+    const offset =
+      (Math.max(1, parseInt(page, 10)) - 1) *
+      Math.min(100, Math.max(1, parseInt(limit, 10)));
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
     const { count, rows } = await Order.findAndCountAll({
       where,
@@ -317,7 +384,9 @@ class OrderService {
               model: Product,
               as: 'product',
               attributes: ['id', 'name'],
-              include: [{ model: ProductImage, as: 'images', attributes: ['url'], limit: 1 }],
+              include: [
+                { model: ProductImage, as: 'images', attributes: ['url'], limit: 1 },
+              ],
             },
             {
               model: ProductVariant,
