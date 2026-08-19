@@ -1,0 +1,12 @@
+const express = require('express');
+const router = express.Router();
+const pickupLocationController = require('../controllers/pickupLocationController');
+const authMiddleware = require('../middleware/authMiddleware');
+router.get('/', authMiddleware, pickupLocationController.getAll);
+router.get('/:id', authMiddleware, pickupLocationController.getById);
+router.post('/', authMiddleware, pickupLocationController.create);
+router.put('/:id', authMiddleware, pickupLocationController.update);
+router.patch('/:id/active', authMiddleware, pickupLocationController.setActive);
+router.patch('/:id/default', authMiddleware, pickupLocationController.setDefault);
+router.delete('/:id', authMiddleware, pickupLocationController.delete);
+module.exports = router;

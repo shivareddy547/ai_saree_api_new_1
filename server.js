@@ -82,6 +82,7 @@ app.use('/api/orders', require('./routes/orderRoutes'));
 app.use('/api/user-voices', require('./routes/userVoiceRoutes'));
 app.use('/api/user', require('./routes/userRoutes'));
 app.use('/api/addresses', require('./routes/addressRoutes'));
+app.use('/api/pickup-locations', require('./routes/pickupLocationRoutes'));
 // ==========================================
 // SWAGGER UI
 // ==========================================
