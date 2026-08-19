@@ -191,5 +191,71 @@ class OrderController {
       next(error);
     }
   }
+  async refreshShipmentStatus(req, res, next) {
+    try {
+      const { id } = req.params;
+      const order = await orderService.refreshShipmentStatus(id);
+      res.status(200).json({
+        success: true,
+        data: order,
+        message: 'Shipment status refreshed',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+  async cancelShipmentAdmin(req, res, next) {
+    try {
+      const { id } = req.params;
+      const order = await orderService.cancelShipmentAdmin(id);
+      res.status(200).json({
+        success: true,
+        data: order,
+        message: 'Shipment cancelled successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+  async createShipmentAdmin(req, res, next) {
+    try {
+      const { id } = req.params;
+      const {
+        courierCompanyId,
+        courierName,
+        shipmentProviderId,
+        shippingAmount,
+        estimatedDeliveryDays,
+        shippingAddressObj,
+      } = req.body;
+      const order = await orderService.createShipmentAdmin(id, {
+        courierCompanyId,
+        courierName,
+        shipmentProviderId,
+        shippingAmount,
+        estimatedDeliveryDays,
+        shippingAddressObj,
+      });
+      res.status(200).json({
+        success: true,
+        data: order,
+        message: 'Shipment created successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+  async getShipmentProviders(req, res, next) {
+    try {
+      const providers = await shipmentService.getEnabledShipmentProviders();
+      res.status(200).json({
+        success: true,
+        data: providers,
+        message: 'Shipment providers fetched',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 module.exports = new OrderController();

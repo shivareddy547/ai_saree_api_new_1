@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { Provider, PickupLocation } = require('../models');
+const { Provider, PickupLocation, Order, OrderItem, Product, ProductVariant } = require('../models');
 const SHIPROCKET_BASE = {
   production: 'https://apiv2.shiprocket.in/v1/external',
   sandbox: 'https://apiv2.shiprocket.in/v1/external',
@@ -19,8 +19,19 @@ const getEnabledShiprocketProvider = async () => {
     order: [['createdAt', 'DESC']],
   });
   if (!provider) {
-    const err = new Error('No enabled Shiprocket provider found. Please configure and enable it in Shipment Providers Setup.');
+    const err = new Error(
+      'No enabled Shiprocket provider found. Please configure and enable it in Shipment Providers Setup.'
+    );
     err.status = 400;
+    throw err;
+  }
+  return provider;
+};
+const getProviderById = async (id) => {
+  const provider = await Provider.findByPk(id);
+  if (!provider || provider.provider_type !== 'shipment' || !provider.is_enabled) {
+    const err = new Error('Shipment provider not found or not enabled');
+    err.status = 404;
     throw err;
   }
   return provider;
@@ -45,10 +56,7 @@ const getShiprocketToken = async (provider) => {
   const env = (creds.environment || 'production').toLowerCase();
   const base = SHIPROCKET_BASE[env] || SHIPROCKET_BASE.production;
   try {
-    const res = await axios.post(`${base}/auth/login`, {
-      email,
-      password,
-    });
+    const res = await axios.post(`${base}/auth/login`, { email, password });
     const token = res.data?.token;
     if (!token) {
       const err = new Error('Failed to obtain Shiprocket token');
@@ -63,9 +71,7 @@ const getShiprocketToken = async (provider) => {
     return token;
   } catch (e) {
     const msg =
-      e.response?.data?.message ||
-      e.message ||
-      'Shiprocket authentication failed';
+      e.response?.data?.message || e.message || 'Shiprocket authentication failed';
     const err = new Error(msg);
     err.status = e.response?.status || 502;
     throw err;
@@ -78,9 +84,6 @@ const getDefaultPickupLocation = async () => {
   if (loc) return loc;
   return await PickupLocation.findOne({ where: { isActive: true } });
 };
-/**
- * Fetch available courier rates from Shiprocket for given pincodes and weight.
- */
 const getShippingRates = async ({
   deliveryPincode,
   weight = 0.5,
@@ -125,7 +128,8 @@ const getShippingRates = async ({
       courierCompanyId: String(c.courier_company_id),
       courierName: c.courier_name || c.courier_company_name || 'Courier',
       rate: parseFloat(c.rate) || 0,
-      estimatedDays: parseInt(c.estimated_delivery_days, 10) || parseInt(c.etd, 10) || null,
+      estimatedDays:
+        parseInt(c.estimated_delivery_days, 10) || parseInt(c.etd, 10) || null,
       etd: c.etd || null,
       freightCharge: parseFloat(c.freight_charge) || parseFloat(c.rate) || 0,
       codCharges: parseFloat(c.cod_charges) || 0,
@@ -153,11 +157,15 @@ const getShippingRates = async ({
     throw err;
   }
 };
-/**
- * Create a shipment order in Shiprocket after local order is placed.
- */
-const createShiprocketOrder = async (order, orderItems, shippingAddressObj, selectedCourier) => {
-  const provider = await getEnabledShiprocketProvider();
+const createShiprocketOrder = async (
+  order,
+  orderItems,
+  shippingAddressObj,
+  selectedCourier
+) => {
+  const provider = selectedCourier?.shipmentProviderId
+    ? await getProviderById(selectedCourier.shipmentProviderId)
+    : await getEnabledShiprocketProvider();
   const pickup = await getDefaultPickupLocation();
   if (!pickup) {
     const err = new Error('No default pickup location configured');
@@ -168,7 +176,8 @@ const createShiprocketOrder = async (order, orderItems, shippingAddressObj, sele
   const env = (provider.credentials?.environment || 'production').toLowerCase();
   const base = SHIPROCKET_BASE[env] || SHIPROCKET_BASE.production;
   const billingName = shippingAddressObj.fullName || 'Customer';
-  const billingPhone = (shippingAddressObj.phone || '').replace(/\D/g, '').slice(-10) || '9999999999';
+  const billingPhone =
+    (shippingAddressObj.phone || '').replace(/\D/g, '').slice(-10) || '9999999999';
   const orderItemsPayload = (orderItems || []).map((item) => ({
     name: item.product?.name || item.name || 'Product',
     sku: item.variant?.sku || item.product?.defaultSku || `SKU-${item.productId}`,
@@ -195,7 +204,9 @@ const createShiprocketOrder = async (order, orderItems, shippingAddressObj, sele
     shipping_is_billing: true,
     order_items: orderItemsPayload,
     payment_method: order.paymentStatus === 'cod' ? 'COD' : 'Prepaid',
-    sub_total: parseFloat(order.total) - (parseFloat(order.shippingAmount) || 0) || parseFloat(order.total),
+    sub_total:
+      parseFloat(order.total) - (parseFloat(order.shippingAmount) || 0) ||
+      parseFloat(order.total),
     length: 10,
     breadth: 10,
     height: 5,
@@ -218,6 +229,7 @@ const createShiprocketOrder = async (order, orderItems, shippingAddressObj, sele
       awbCode: data.awb_code || null,
       status: data.status || data.status_code || null,
       raw: data,
+      providerId: provider.id,
     };
   } catch (e) {
     const msg =
@@ -235,13 +247,167 @@ const createShiprocketOrder = async (order, orderItems, shippingAddressObj, sele
       status: 'failed',
       error: msg,
       raw: e.response?.data || null,
+      providerId: provider.id,
     };
   }
+};
+/**
+ * Track / fetch latest shipment status from Shiprocket
+ */
+const trackShipment = async (order) => {
+  if (!order.shiprocketShipmentId && !order.awbCode) {
+    const err = new Error('No Shiprocket shipment ID or AWB on this order');
+    err.status = 400;
+    throw err;
+  }
+  const provider = order.shipmentProviderId
+    ? await getProviderById(order.shipmentProviderId)
+    : await getEnabledShiprocketProvider();
+  const token = await getShiprocketToken(provider);
+  const env = (provider.credentials?.environment || 'production').toLowerCase();
+  const base = SHIPROCKET_BASE[env] || SHIPROCKET_BASE.production;
+  try {
+    let res;
+    if (order.awbCode) {
+      res = await axios.get(`${base}/courier/track/awb/${order.awbCode}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } else {
+      res = await axios.get(
+        `${base}/courier/track/shipment/${order.shiprocketShipmentId}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+    }
+    const data = res.data?.tracking_data || res.data?.data || res.data || {};
+    const trackStatus =
+      data.track_status ||
+      data.shipment_status ||
+      data.current_status ||
+      data.status ||
+      null;
+    const activities = data.shipment_track || data.track_activities || data.activities || [];
+    return {
+      status: trackStatus,
+      awbCode: order.awbCode || data.awb_code || null,
+      activities,
+      raw: data,
+    };
+  } catch (e) {
+    const msg =
+      e.response?.data?.message || e.message || 'Failed to track shipment';
+    const err = new Error(msg);
+    err.status = e.response?.status || 502;
+    throw err;
+  }
+};
+/**
+ * Cancel a Shiprocket shipment
+ */
+const cancelShipment = async (order) => {
+  if (!order.shiprocketOrderId && !order.awbCode) {
+    const err = new Error('No Shiprocket order/AWB to cancel');
+    err.status = 400;
+    throw err;
+  }
+  const provider = order.shipmentProviderId
+    ? await getProviderById(order.shipmentProviderId)
+    : await getEnabledShiprocketProvider();
+  const token = await getShiprocketToken(provider);
+  const env = (provider.credentials?.environment || 'production').toLowerCase();
+  const base = SHIPROCKET_BASE[env] || SHIPROCKET_BASE.production;
+  try {
+    const ids = order.shiprocketOrderId
+      ? [Number(order.shiprocketOrderId)]
+      : [];
+    const res = await axios.post(
+      `${base}/orders/cancel`,
+      { ids },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+    return {
+      success: true,
+      message: res.data?.message || 'Shipment cancelled',
+      raw: res.data,
+    };
+  } catch (e) {
+    const msg =
+      e.response?.data?.message || e.message || 'Failed to cancel shipment';
+    const err = new Error(msg);
+    err.status = e.response?.status || 502;
+    throw err;
+  }
+};
+/**
+ * List enabled shipment providers (for admin UI)
+ */
+const getEnabledShipmentProviders = async () => {
+  const providers = await Provider.findAll({
+    where: {
+      provider_type: 'shipment',
+      is_enabled: true,
+    },
+    order: [['createdAt', 'DESC']],
+  });
+  return providers.map((p) => ({
+    id: p.id,
+    name: p.name,
+    provider_key: p.provider_key,
+    is_enabled: p.is_enabled,
+  }));
+};
+/**
+ * Parse a multi-line shipping address text into structured fields
+ */
+const parseShippingAddressText = (text) => {
+  if (!text) return {};
+  const lines = String(text)
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const result = {
+    fullName: lines[0] || 'Customer',
+    streetAddress: lines[1] || '',
+    apartment: '',
+    city: '',
+    state: '',
+    zipCode: '',
+    country: 'India',
+    phone: '',
+  };
+  for (const line of lines) {
+    if (/^Phone:/i.test(line)) {
+      result.phone = line.replace(/^Phone:\s*/i, '').trim();
+    }
+    const pinMatch = line.match(/\b(\d{6})\b/);
+    if (pinMatch) result.zipCode = pinMatch[1];
+    if (/India|United States|United Kingdom|Canada|Australia/i.test(line)) {
+      result.country = line;
+    }
+  }
+  if (lines.length >= 3) {
+    const cityLine = lines[2] || '';
+    const parts = cityLine.split(',').map((p) => p.trim());
+    if (parts[0]) result.city = parts[0].replace(/\s*-\s*\d{6}/, '').trim();
+    if (parts[1]) result.state = parts[1].replace(/\s*-\s*\d{6}/, '').trim();
+  }
+  return result;
 };
 module.exports = {
   getShippingRates,
   createShiprocketOrder,
+  trackShipment,
+  cancelShipment,
   getEnabledShiprocketProvider,
+  getEnabledShipmentProviders,
   getDefaultPickupLocation,
   getShiprocketToken,
+  getProviderById,
+  parseShippingAddressText,
 };

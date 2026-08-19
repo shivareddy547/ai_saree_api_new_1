@@ -1,4 +1,12 @@
-const { Order, OrderItem, Product, ProductVariant, ProductImage, User, sequelize } = require('../models');
+const {
+  Order,
+  OrderItem,
+  Product,
+  ProductVariant,
+  ProductImage,
+  User,
+  sequelize,
+} = require('../models');
 const { Op } = require('sequelize');
 const cartService = require('./cartService');
 const paymentService = require('./paymentService');
@@ -114,7 +122,6 @@ class OrderService {
         err.status = 400;
         throw err;
       }
-      // Shipping amount from selected courier
       const shippingAmount = parseFloat(shipmentOptions.shippingAmount) || 0;
       total += shippingAmount;
       let paymentStatus = 'pending';
@@ -131,12 +138,16 @@ class OrderService {
           const minAmt = parseFloat(provider.credentials?.min_order_amount || 0);
           const maxAmt = parseFloat(provider.credentials?.max_order_amount || 0);
           if (!isNaN(minAmt) && minAmt > 0 && total < minAmt) {
-            const err = new Error(`Minimum order amount for Cash on Delivery is ₹${minAmt}`);
+            const err = new Error(
+              `Minimum order amount for Cash on Delivery is ₹${minAmt}`
+            );
             err.status = 400;
             throw err;
           }
           if (!isNaN(maxAmt) && maxAmt > 0 && total > maxAmt) {
-            const err = new Error(`Maximum order amount for Cash on Delivery is ₹${maxAmt}`);
+            const err = new Error(
+              `Maximum order amount for Cash on Delivery is ₹${maxAmt}`
+            );
             err.status = 400;
             throw err;
           }
@@ -146,7 +157,9 @@ class OrderService {
         paymentStatus = 'cod';
         finalPaymentMethod = 'COD';
       }
-      const merchantOrderId = `ORD_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const merchantOrderId = `ORD_${Date.now()}_${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
       const order = await Order.create(
         {
           userId,
@@ -186,7 +199,6 @@ class OrderService {
         await cartService.clearCart(userId);
       }
       await transaction.commit();
-      // Create Shiprocket shipment after local order is committed (non-blocking for payment flow)
       if (shipmentOptions.courierCompanyId || shipmentOptions.courierName) {
         try {
           const fullOrder = await Order.findByPk(order.id, {
@@ -209,6 +221,7 @@ class OrderService {
             {
               courierCompanyId: shipmentOptions.courierCompanyId,
               courierName: shipmentOptions.courierName,
+              shipmentProviderId: shipmentOptions.shipmentProviderId,
             }
           );
           await fullOrder.update({
@@ -216,13 +229,17 @@ class OrderService {
             shiprocketShipmentId: srResult.shiprocketShipmentId,
             awbCode: srResult.awbCode,
             shipmentStatus: srResult.status || 'created',
+            shipmentProviderId: srResult.providerId || fullOrder.shipmentProviderId,
             shipmentDetails: {
               ...(fullOrder.shipmentDetails || {}),
               shiprocket: srResult.raw || srResult,
             },
           });
         } catch (srErr) {
-          console.error('Shiprocket order creation failed (order still placed):', srErr.message);
+          console.error(
+            'Shiprocket order creation failed (order still placed):',
+            srErr.message
+          );
         }
       }
       if (provider && provider.provider_key === 'phonepe') {
@@ -356,9 +373,7 @@ class OrderService {
           { merchantOrderId: { [Op.iLike]: `%${search}%` } },
         ];
       } else {
-        where[Op.or] = [
-          { merchantOrderId: { [Op.iLike]: `%${search}%` } },
-        ];
+        where[Op.or] = [{ merchantOrderId: { [Op.iLike]: `%${search}%` } }];
       }
     }
     const offset =
@@ -385,7 +400,12 @@ class OrderService {
               as: 'product',
               attributes: ['id', 'name'],
               include: [
-                { model: ProductImage, as: 'images', attributes: ['url'], limit: 1 },
+                {
+                  model: ProductImage,
+                  as: 'images',
+                  attributes: ['url'],
+                  limit: 1,
+                },
               ],
             },
             {
@@ -465,12 +485,10 @@ class OrderService {
     });
     return order;
   }
+  /**
+   * Mark as shipped – only allowed when a shipment provider is associated.
+   */
   async shipOrderAdmin(orderId, trackingUrl) {
-    if (!trackingUrl || !String(trackingUrl).trim()) {
-      const err = new Error('Tracking URL is required');
-      err.status = 400;
-      throw err;
-    }
     const order = await Order.findByPk(orderId);
     if (!order) {
       const err = new Error('Order not found');
@@ -487,10 +505,20 @@ class OrderService {
       err.status = 400;
       throw err;
     }
-    await order.update({
-      status: 'shipped',
-      trackingUrl: String(trackingUrl).trim(),
-    });
+    if (!order.shipmentProviderId && !order.courierName && !order.shiprocketOrderId) {
+      const err = new Error(
+        'Cannot mark as shipped: no shipment provider is associated with this order. Create a shipment first.'
+      );
+      err.status = 400;
+      throw err;
+    }
+    const updates = { status: 'shipped' };
+    if (trackingUrl && String(trackingUrl).trim()) {
+      updates.trackingUrl = String(trackingUrl).trim();
+    } else if (order.awbCode) {
+      updates.trackingUrl = `https://shiprocket.co/tracking/${order.awbCode}`;
+    }
+    await order.update(updates);
     return order;
   }
   async updateOrderStatusAdmin(orderId, status) {
@@ -506,8 +534,157 @@ class OrderService {
       err.status = 404;
       throw err;
     }
+    if (status === 'shipped') {
+      if (
+        !order.shipmentProviderId &&
+        !order.courierName &&
+        !order.shiprocketOrderId
+      ) {
+        const err = new Error(
+          'Cannot set status to shipped: no shipment provider is associated with this order. Create a shipment first.'
+        );
+        err.status = 400;
+        throw err;
+      }
+    }
     await order.update({ status });
     return order;
+  }
+  /**
+   * Fetch latest shipment status from provider and update local order
+   */
+  async refreshShipmentStatus(orderId) {
+    const order = await this.getOrderAdmin(orderId);
+    if (!order.shiprocketShipmentId && !order.awbCode) {
+      const err = new Error(
+        'No active shipment to track. Create a shipment first.'
+      );
+      err.status = 400;
+      throw err;
+    }
+    const track = await shipmentService.trackShipment(order);
+    await order.update({
+      shipmentStatus: track.status || order.shipmentStatus,
+      awbCode: track.awbCode || order.awbCode,
+      shipmentDetails: {
+        ...(order.shipmentDetails || {}),
+        lastTrack: track.raw,
+        lastTrackAt: new Date().toISOString(),
+        activities: track.activities,
+      },
+    });
+    return await this.getOrderAdmin(orderId);
+  }
+  /**
+   * Cancel the existing Shiprocket shipment (does not cancel the local order)
+   */
+  async cancelShipmentAdmin(orderId) {
+    const order = await this.getOrderAdmin(orderId);
+    if (!order.shiprocketOrderId && !order.awbCode) {
+      const err = new Error('No active Shiprocket shipment to cancel');
+      err.status = 400;
+      throw err;
+    }
+    const result = await shipmentService.cancelShipment(order);
+    await order.update({
+      shipmentStatus: 'cancelled',
+      shiprocketOrderId: null,
+      shiprocketShipmentId: null,
+      awbCode: null,
+      trackingUrl: null,
+      shipmentDetails: {
+        ...(order.shipmentDetails || {}),
+        cancelResult: result.raw || result,
+        cancelledAt: new Date().toISOString(),
+      },
+    });
+    return await this.getOrderAdmin(orderId);
+  }
+  /**
+   * Create a new shipment for an existing order (admin)
+   */
+  async createShipmentAdmin(orderId, options = {}) {
+    const order = await this.getOrderAdmin(orderId);
+    if (order.status === 'cancelled') {
+      const err = new Error('Cannot create shipment for a cancelled order');
+      err.status = 400;
+      throw err;
+    }
+    if (order.status === 'delivered') {
+      const err = new Error('Cannot create shipment for a delivered order');
+      err.status = 400;
+      throw err;
+    }
+    const addrObj =
+      options.shippingAddressObj ||
+      shipmentService.parseShippingAddressText(order.shippingAddress);
+    if (options.courierCompanyId) {
+      // use provided courier
+    } else if (addrObj.zipCode) {
+      // auto-pick cheapest rate if no courier specified
+      try {
+        const ratesResult = await shipmentService.getShippingRates({
+          deliveryPincode: addrObj.zipCode,
+          weight: 0.5,
+          cod: order.paymentStatus === 'cod' ? 1 : 0,
+          declaredValue: parseFloat(order.total) || 0,
+        });
+        if (ratesResult.rates && ratesResult.rates.length > 0) {
+          const best = ratesResult.rates[0];
+          options.courierCompanyId = best.courierCompanyId;
+          options.courierName = best.courierName;
+          options.shippingAmount = best.rate;
+          options.estimatedDeliveryDays = best.estimatedDays;
+          options.shipmentProviderId =
+            options.shipmentProviderId || ratesResult.providerId;
+        }
+      } catch (rateErr) {
+        console.error('Auto rate fetch failed:', rateErr.message);
+      }
+    }
+    const srResult = await shipmentService.createShiprocketOrder(
+      order,
+      order.items,
+      addrObj,
+      {
+        courierCompanyId: options.courierCompanyId,
+        courierName: options.courierName,
+        shipmentProviderId: options.shipmentProviderId,
+      }
+    );
+    if (srResult.error && !srResult.shiprocketOrderId) {
+      const err = new Error(srResult.error || 'Failed to create shipment');
+      err.status = 502;
+      throw err;
+    }
+    await order.update({
+      shiprocketOrderId: srResult.shiprocketOrderId,
+      shiprocketShipmentId: srResult.shiprocketShipmentId,
+      awbCode: srResult.awbCode,
+      shipmentStatus: srResult.status || 'created',
+      shipmentProviderId: srResult.providerId || order.shipmentProviderId,
+      courierCompanyId: options.courierCompanyId
+        ? String(options.courierCompanyId)
+        : order.courierCompanyId,
+      courierName: options.courierName || order.courierName,
+      shippingAmount:
+        options.shippingAmount != null
+          ? options.shippingAmount
+          : order.shippingAmount,
+      estimatedDeliveryDays:
+        options.estimatedDeliveryDays != null
+          ? options.estimatedDeliveryDays
+          : order.estimatedDeliveryDays,
+      trackingUrl: srResult.awbCode
+        ? `https://shiprocket.co/tracking/${srResult.awbCode}`
+        : order.trackingUrl,
+      shipmentDetails: {
+        ...(order.shipmentDetails || {}),
+        shiprocket: srResult.raw || srResult,
+        createdAt: new Date().toISOString(),
+      },
+    });
+    return await this.getOrderAdmin(orderId);
   }
 }
 module.exports = new OrderService();
