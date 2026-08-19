@@ -29,8 +29,8 @@ const getProviderById = async (id) => {
 };
 const createProvider = async (data) => {
   try {
-    if (!data.provider_type || !['smtp', 'sms', 'social', 'payment'].includes(data.provider_type)) {
-      const err = new Error('provider_type must be smtp, sms, social, or payment');
+    if (!data.provider_type || !['smtp', 'sms', 'social', 'payment', 'shipment'].includes(data.provider_type)) {
+      const err = new Error('provider_type must be smtp, sms, social, payment, or shipment');
       err.status = 400;
       throw err;
     }

@@ -12,7 +12,7 @@ module.exports = (sequelize) => {
         allowNull: false,
       },
       provider_type: {
-        type: DataTypes.ENUM('smtp', 'sms', 'social', 'payment'),
+        type: DataTypes.ENUM('smtp', 'sms', 'social', 'payment', 'shipment'),
         allowNull: false,
       },
       name: {
