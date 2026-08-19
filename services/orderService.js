@@ -211,9 +211,16 @@ class OrderService {
                   { model: ProductVariant, as: 'variant' },
                 ],
               },
+              {
+                model: User,
+                as: 'user',
+                attributes: ['id', 'fullName', 'email', 'phone'],
+              },
             ],
           });
-          const addrObj = shipmentOptions.shippingAddressObj || {};
+          const addrObj =
+            shipmentOptions.shippingAddressObj ||
+            shipmentService.parseShippingAddressText(shippingAddress);
           const srResult = await shipmentService.createShiprocketOrder(
             fullOrder,
             fullOrder.items,
@@ -348,17 +355,11 @@ class OrderService {
       limit = 20,
     } = filters;
     const where = {};
-    if (status) {
-      where.status = status;
-    }
-    if (paymentStatus) {
-      where.paymentStatus = paymentStatus;
-    }
+    if (status) where.status = status;
+    if (paymentStatus) where.paymentStatus = paymentStatus;
     if (startDate || endDate) {
       where.createdAt = {};
-      if (startDate) {
-        where.createdAt[Op.gte] = new Date(startDate);
-      }
+      if (startDate) where.createdAt[Op.gte] = new Date(startDate);
       if (endDate) {
         const end = new Date(endDate);
         end.setHours(23, 59, 59, 999);
@@ -485,9 +486,6 @@ class OrderService {
     });
     return order;
   }
-  /**
-   * Mark as shipped – only allowed when a shipment provider is associated.
-   */
   async shipOrderAdmin(orderId, trackingUrl) {
     const order = await Order.findByPk(orderId);
     if (!order) {
@@ -550,9 +548,6 @@ class OrderService {
     await order.update({ status });
     return order;
   }
-  /**
-   * Fetch latest shipment status from provider and update local order
-   */
   async refreshShipmentStatus(orderId) {
     const order = await this.getOrderAdmin(orderId);
     if (!order.shiprocketShipmentId && !order.awbCode) {
@@ -575,9 +570,6 @@ class OrderService {
     });
     return await this.getOrderAdmin(orderId);
   }
-  /**
-   * Cancel the existing Shiprocket shipment (does not cancel the local order)
-   */
   async cancelShipmentAdmin(orderId) {
     const order = await this.getOrderAdmin(orderId);
     if (!order.shiprocketOrderId && !order.awbCode) {
@@ -601,7 +593,8 @@ class OrderService {
     return await this.getOrderAdmin(orderId);
   }
   /**
-   * Create a new shipment for an existing order (admin)
+   * Create a new shipment for an existing order (admin).
+   * Parses shippingAddress text, enriches from user, validates, then calls Shiprocket.
    */
   async createShipmentAdmin(orderId, options = {}) {
     const order = await this.getOrderAdmin(orderId);
@@ -615,13 +608,24 @@ class OrderService {
       err.status = 400;
       throw err;
     }
-    const addrObj =
-      options.shippingAddressObj ||
-      shipmentService.parseShippingAddressText(order.shippingAddress);
+    // Build address from explicit obj or parse free-text on order
+    let addrObj = options.shippingAddressObj || null;
+    if (!addrObj || !addrObj.zipCode) {
+      const parsed = shipmentService.parseShippingAddressText(
+        order.shippingAddress || order.billingAddress || ''
+      );
+      addrObj = { ...parsed, ...(addrObj || {}) };
+    }
+    addrObj = shipmentService.buildCompleteAddress(addrObj, order);
+    // Early validation so we return 400 instead of Shiprocket 502
+    try {
+      shipmentService.validateAddressForShiprocket(addrObj);
+    } catch (valErr) {
+      throw valErr;
+    }
     if (options.courierCompanyId) {
-      // use provided courier
+      // use provided
     } else if (addrObj.zipCode) {
-      // auto-pick cheapest rate if no courier specified
       try {
         const ratesResult = await shipmentService.getShippingRates({
           deliveryPincode: addrObj.zipCode,
