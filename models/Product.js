@@ -132,6 +132,27 @@ module.exports = (sequelize) => {
       allowNull: false,
       defaultValue: false,
     },
+    // Default shipping package dimensions
+    weight: {
+      type: DataTypes.DECIMAL(10, 2),
+      allowNull: false,
+      defaultValue: 0.5,
+    },
+    length: {
+      type: DataTypes.DECIMAL(10, 2),
+      allowNull: false,
+      defaultValue: 30,
+    },
+    breadth: {
+      type: DataTypes.DECIMAL(10, 2),
+      allowNull: false,
+      defaultValue: 25,
+    },
+    height: {
+      type: DataTypes.DECIMAL(10, 2),
+      allowNull: false,
+      defaultValue: 5,
+    },
   }, {
     sequelize,
     modelName: 'Product',

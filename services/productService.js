@@ -48,6 +48,10 @@ const createProduct = async (data) => {
     const costPrice = sanitizeNumeric(data.costPrice);
     const stockQuantity = sanitizeNumeric(data.stockQuantity, 0);
     const videoLength = sanitizeNumeric(data.videoLength);
+    const weight = sanitizeNumeric(data.weight, 0.5);
+    const length = sanitizeNumeric(data.length, 30);
+    const breadth = sanitizeNumeric(data.breadth, 25);
+    const height = sanitizeNumeric(data.height, 5);
     const productData = {
       userId: data.userId,
       name: data.name,
@@ -74,6 +78,10 @@ const createProduct = async (data) => {
       showInBestSellers: data.showInBestSellers || false,
       showInNewArrivals: data.showInNewArrivals || false,
       showInPremiumProducts: data.showInPremiumProducts || false,
+      weight: weight,
+      length: length,
+      breadth: breadth,
+      height: height,
     };
     const product = await Product.create(productData, { transaction });
     let variants = data.variants || [];
@@ -212,6 +220,10 @@ const updateProduct = async (id, data) => {
     const costPrice = sanitizeNumeric(data.costPrice);
     const stockQuantity = sanitizeNumeric(data.stockQuantity, 0);
     const videoLength = sanitizeNumeric(data.videoLength);
+    const weight = sanitizeNumeric(data.weight, 0.5);
+    const length = sanitizeNumeric(data.length, 30);
+    const breadth = sanitizeNumeric(data.breadth, 25);
+    const height = sanitizeNumeric(data.height, 5);
     const productData = {
       userId: data.userId,
       name: data.name,
@@ -238,6 +250,10 @@ const updateProduct = async (id, data) => {
       showInBestSellers: data.showInBestSellers !== undefined ? data.showInBestSellers : product.showInBestSellers,
       showInNewArrivals: data.showInNewArrivals !== undefined ? data.showInNewArrivals : product.showInNewArrivals,
       showInPremiumProducts: data.showInPremiumProducts !== undefined ? data.showInPremiumProducts : product.showInPremiumProducts,
+      weight: weight,
+      length: length,
+      breadth: breadth,
+      height: height,
     };
     await product.update(productData, { transaction });
     if (data.variants !== undefined) {
