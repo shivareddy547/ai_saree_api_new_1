@@ -1,6 +1,7 @@
 const orderService = require('../services/orderService');
 const paymentService = require('../services/paymentService');
 const shipmentService = require('../services/shipmentService');
+
 class OrderController {
   async createOrder(req, res, next) {
     try {
@@ -52,12 +53,24 @@ class OrderController {
       next(error);
     }
   }
+
   async getShippingRates(req, res, next) {
     try {
-      const { deliveryPincode, weight, cod, declaredValue } = req.body;
-      const result = await shipmentService.getShippingRates({
+      const {
         deliveryPincode,
         weight,
+        length,
+        breadth,
+        height,
+        cod,
+        declaredValue,
+      } = req.body;
+      const result = await shipmentService.getShippingRates({
+        deliveryPincode,
+        weight: weight != null ? weight : 0.5,
+        length: length != null ? length : 10,
+        breadth: breadth != null ? breadth : 10,
+        height: height != null ? height : 5,
         cod: !!cod,
         declaredValue: declaredValue || 0,
       });
@@ -70,6 +83,7 @@ class OrderController {
       next(error);
     }
   }
+
   async getOrders(req, res, next) {
     try {
       const userId = req.user.id;
@@ -79,6 +93,7 @@ class OrderController {
       next(error);
     }
   }
+
   async getOrder(req, res, next) {
     try {
       const userId = req.user.id;
@@ -89,6 +104,7 @@ class OrderController {
       next(error);
     }
   }
+
   async getPaymentProviders(req, res, next) {
     try {
       const providers = await paymentService.getEnabledPaymentProviders();
@@ -101,6 +117,7 @@ class OrderController {
       next(error);
     }
   }
+
   async verifyPayment(req, res, next) {
     try {
       const userId = req.user.id;
@@ -113,12 +130,15 @@ class OrderController {
           state: result.state,
           order: result.order,
         },
-        message: result.paid ? 'Payment successful' : 'Payment not completed yet',
+        message: result.paid
+          ? 'Payment successful'
+          : 'Payment not completed yet',
       });
     } catch (error) {
       next(error);
     }
   }
+
   async getAllOrdersAdmin(req, res, next) {
     try {
       const filters = {
@@ -140,6 +160,7 @@ class OrderController {
       next(error);
     }
   }
+
   async getOrderAdmin(req, res, next) {
     try {
       const { id } = req.params;
@@ -149,6 +170,7 @@ class OrderController {
       next(error);
     }
   }
+
   async cancelOrderAdmin(req, res, next) {
     try {
       const { id } = req.params;
@@ -163,6 +185,7 @@ class OrderController {
       next(error);
     }
   }
+
   async shipOrderAdmin(req, res, next) {
     try {
       const { id } = req.params;
@@ -177,6 +200,7 @@ class OrderController {
       next(error);
     }
   }
+
   async updateOrderStatusAdmin(req, res, next) {
     try {
       const { id } = req.params;
@@ -191,6 +215,7 @@ class OrderController {
       next(error);
     }
   }
+
   async refreshShipmentStatus(req, res, next) {
     try {
       const { id } = req.params;
@@ -204,6 +229,7 @@ class OrderController {
       next(error);
     }
   }
+
   async cancelShipmentAdmin(req, res, next) {
     try {
       const { id } = req.params;
@@ -217,6 +243,7 @@ class OrderController {
       next(error);
     }
   }
+
   async createShipmentAdmin(req, res, next) {
     try {
       const { id } = req.params;
@@ -245,6 +272,7 @@ class OrderController {
       next(error);
     }
   }
+
   async getShipmentProviders(req, res, next) {
     try {
       const providers = await shipmentService.getEnabledShipmentProviders();
@@ -258,4 +286,5 @@ class OrderController {
     }
   }
 }
+
 module.exports = new OrderController();
