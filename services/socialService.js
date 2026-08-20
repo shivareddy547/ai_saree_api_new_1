@@ -1,11 +1,26 @@
+'use strict';
 const { Provider, UserSocialConnection, User } = require('../models');
-const axios = require('axios');
+const {
+  exchangeCodeForToken,
+  getLongLivedToken,
+  getInstagramUserInfo,
+} = require('./instagramService');
 const facebookService = require('./facebookService');
 const youtubeService = require('./youtubeService');
-const { exchangeCodeForToken, getLongLivedToken, getInstagramUserInfo } = require('./instagramService');
-const { getOAuthUrl: getPinterestOAuthUrl, exchangeCodeForToken: exchangePinterestCode, getUserInfo: getPinterestUserInfo } = require('./pinterestService');
+
+// Optional Pinterest helpers
+let getPinterestOAuthUrl, exchangePinterestCode, getPinterestUserInfo;
+try {
+  const pinterest = require('./pinterestService');
+  getPinterestOAuthUrl = pinterest.getPinterestOAuthUrl;
+  exchangePinterestCode = pinterest.exchangePinterestCode;
+  getPinterestUserInfo = pinterest.getPinterestUserInfo;
+} catch (e) {
+  // pinterestService may not exist
+}
+
 /**
- * Helper: load provider + user connection
+ * Helper to load provider + connection for a user.
  */
 async function getProviderAndConnection(userId, providerId) {
   const provider = await Provider.findByPk(providerId);
@@ -29,6 +44,7 @@ async function getProviderAndConnection(userId, providerId) {
   });
   return { provider, connection };
 }
+
 /**
  * Build OAuth URL for a given provider.
  * Supports Instagram, Pinterest, Facebook, and YouTube.
@@ -51,8 +67,9 @@ const getOAuthUrl = async (providerId, userId) => {
     throw err;
   }
   const { provider_key, credentials } = provider;
+
   if (provider_key === 'instagram') {
-    let { app_id: clientId, redirect_uri: redirectUri, scope } = credentials;
+    let { app_id: clientId, redirect_uri: redirectUri, scope } = credentials || {};
     clientId = clientId ? clientId.trim() : '';
     redirectUri = redirectUri ? redirectUri.trim() : '';
     scope = scope ? scope.trim() : '';
@@ -64,11 +81,11 @@ const getOAuthUrl = async (providerId, userId) => {
     const scopeStr = scope || 'instagram_business_basic,instagram_business_content_publish';
     const url = `https://api.instagram.com/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&state=${providerId}`;
     return url;
-  } else if (provider_key === 'pinterest') {
+  } else if (provider_key === 'pinterest' && getPinterestOAuthUrl) {
     const baseUrl = getPinterestOAuthUrl(credentials);
     return baseUrl + providerId;
   } else if (provider_key === 'facebook') {
-    let { app_id: clientId, redirect_uri: redirectUri, scope } = credentials;
+    let { app_id: clientId, redirect_uri: redirectUri, scope } = credentials || {};
     clientId = clientId ? clientId.trim() : '';
     redirectUri = redirectUri ? redirectUri.trim() : '';
     scope = scope ? scope.trim() : '';
@@ -77,38 +94,32 @@ const getOAuthUrl = async (providerId, userId) => {
       err.status = 400;
       throw err;
     }
-    if (!/^\d+$/.test(clientId)) {
-      const err = new Error('Invalid Facebook App ID. Please check your credentials.');
-      err.status = 400;
-      throw err;
-    }
-    const scopeStr = scope || 'pages_manage_posts,pages_read_engagement';
-    const url = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopeStr)}&state=${providerId}`;
-    console.log('Facebook OAuth URL:', url);
+    const scopeStr = scope || 'pages_show_list,pages_read_engagement,pages_manage_posts,publish_video';
+    const url = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&state=${providerId}`;
     return url;
   } else if (provider_key === 'youtube') {
-    let { client_id, redirect_uri, scope } = credentials;
-    client_id = client_id ? client_id.trim() : '';
-    redirect_uri = redirect_uri ? redirect_uri.trim() : '';
+    let { client_id: clientId, redirect_uri: redirectUri, scope } = credentials || {};
+    clientId = clientId ? clientId.trim() : '';
+    redirectUri = redirectUri ? redirectUri.trim() : '';
     scope = scope ? scope.trim() : '';
-    if (!client_id || !redirect_uri) {
+    if (!clientId || !redirectUri) {
       const err = new Error('Missing required credentials for YouTube');
       err.status = 400;
       throw err;
     }
     const scopeStr = scope || 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly';
-    const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${client_id}&redirect_uri=${encodeURIComponent(redirect_uri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&access_type=offline&state=${providerId}`;
-    console.log('YouTube OAuth URL:', url);
+    const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&access_type=offline&prompt=consent&state=${providerId}`;
     return url;
-  } else {
-    const err = new Error(`Provider ${provider_key} not yet supported for OAuth`);
-    err.status = 400;
-    throw err;
   }
+
+  const err = new Error(`OAuth for ${provider_key} is not supported`);
+  err.status = 400;
+  throw err;
 };
+
 /**
- * Exchange code for tokens and store connection.
- * Supports Instagram, Pinterest, Facebook, and YouTube.
+ * Complete OAuth connect flow for a provider.
+ * Fully supports Instagram, Pinterest, Facebook and YouTube.
  */
 const connect = async (userId, code, state) => {
   const providerId = state;
@@ -129,9 +140,10 @@ const connect = async (userId, code, state) => {
     throw err;
   }
   const { provider_key, credentials } = provider;
+
   // --- Instagram ---
   if (provider_key === 'instagram') {
-    let { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri } = credentials;
+    let { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri } = credentials || {};
     clientId = clientId ? clientId.trim() : '';
     clientSecret = clientSecret ? clientSecret.trim() : '';
     redirectUri = redirectUri ? redirectUri.trim() : '';
@@ -188,15 +200,16 @@ const connect = async (userId, code, state) => {
         metadata: { ...userInfo },
       });
     }
-    await User.update({
-      instagramAccessToken: longLivedData.access_token,
-      instagramAccountId: accountId,
-      instagramUsername: userInfo.username,
-      instagramAccountType: userInfo.account_type || 'business',
-      instagramTokenExpiresAt: expiresAt,
-    }, {
-      where: { id: userId },
-    });
+    await User.update(
+      {
+        instagramAccessToken: longLivedData.access_token,
+        instagramAccountId: accountId,
+        instagramUsername: userInfo.username,
+        instagramAccountType: userInfo.account_type || 'business',
+        instagramTokenExpiresAt: expiresAt,
+      },
+      { where: { id: userId } }
+    );
     return {
       connected: true,
       accountId: accountId,
@@ -205,9 +218,15 @@ const connect = async (userId, code, state) => {
       tokenExpiresAt: expiresAt,
     };
   }
+
   // --- Pinterest ---
   else if (provider_key === 'pinterest') {
-    let { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri, environment } = credentials;
+    if (!exchangePinterestCode || !getPinterestUserInfo) {
+      const err = new Error('Pinterest service is not available');
+      err.status = 500;
+      throw err;
+    }
+    let { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri, environment } = credentials || {};
     clientId = clientId ? clientId.trim() : '';
     clientSecret = clientSecret ? clientSecret.trim() : '';
     redirectUri = redirectUri ? redirectUri.trim() : '';
@@ -268,9 +287,10 @@ const connect = async (userId, code, state) => {
       tokenExpiresAt: expiresAt,
     };
   }
+
   // --- Facebook ---
   else if (provider_key === 'facebook') {
-    let { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri } = credentials;
+    let { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri } = credentials || {};
     clientId = clientId ? clientId.trim() : '';
     clientSecret = clientSecret ? clientSecret.trim() : '';
     redirectUri = redirectUri ? redirectUri.trim() : '';
@@ -340,9 +360,10 @@ const connect = async (userId, code, state) => {
       tokenExpiresAt: expiresAt,
     };
   }
+
   // --- YouTube ---
   else if (provider_key === 'youtube') {
-    let { client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri } = credentials;
+    let { client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri } = credentials || {};
     clientId = clientId ? clientId.trim() : '';
     clientSecret = clientSecret ? clientSecret.trim() : '';
     redirectUri = redirectUri ? redirectUri.trim() : '';
@@ -402,12 +423,14 @@ const connect = async (userId, code, state) => {
       tokenExpiresAt: expiresAt,
     };
   }
+
   else {
     const err = new Error(`Provider ${provider_key} not yet supported for connection`);
     err.status = 400;
     throw err;
   }
 };
+
 /**
  * Get all connections for a user.
  */
@@ -434,6 +457,7 @@ const getConnections = async (userId) => {
     provider: conn.provider,
   }));
 };
+
 /**
  * Get status for a specific provider connection.
  */
@@ -461,6 +485,7 @@ const getConnectionStatus = async (userId, providerId) => {
     id: conn.id,
   };
 };
+
 /**
  * Disconnect a connection.
  */
@@ -474,22 +499,24 @@ const disconnect = async (userId, connectionId) => {
     throw err;
   }
   if (conn.providerType === 'instagram') {
-    await User.update({
-      instagramAccessToken: null,
-      instagramAccountId: null,
-      instagramUsername: null,
-      instagramAccountType: null,
-      instagramTokenExpiresAt: null,
-    }, {
-      where: { id: userId },
-    });
+    await User.update(
+      {
+        instagramAccessToken: null,
+        instagramAccountId: null,
+        instagramUsername: null,
+        instagramAccountType: null,
+        instagramTokenExpiresAt: null,
+      },
+      { where: { id: userId } }
+    );
   }
   await conn.destroy();
   return { disconnected: true };
 };
+
 /**
  * Post video to a social provider.
- * Supports Instagram, Facebook, and YouTube.
+ * Supports Instagram (real Graph API), Facebook, and YouTube.
  */
 const postVideo = async (userId, providerId, videoUrl, mediaType, caption, title, privacyStatus) => {
   const { provider, connection } = await getProviderAndConnection(userId, providerId);
@@ -504,13 +531,33 @@ const postVideo = async (userId, providerId, videoUrl, mediaType, caption, title
     throw err;
   }
   const { provider_key } = provider;
+
   if (provider_key === 'instagram') {
     const { postReel } = require('./instagramService');
-    return await postReel(userId, videoUrl, mediaType, caption);
+    // Pass real access token + accountId for live Instagram Graph API
+    const result = await postReel(
+      connection.accessToken,
+      connection.accountId,
+      videoUrl,
+      mediaType || 'REELS',
+      caption || ''
+    );
+    return {
+      media_id: result.media_id,
+      creation_id: result.creation_id,
+      status: result.status,
+      media_type: result.media_type,
+      video_url: videoUrl,
+    };
   } else if (provider_key === 'facebook') {
     const postTitle = caption || 'Video post';
     const description = caption || '';
-    const result = await facebookService.postVideoToPage(connection.accessToken, videoUrl, postTitle, description);
+    const result = await facebookService.postVideoToPage(
+      connection.accessToken,
+      videoUrl,
+      postTitle,
+      description
+    );
     return {
       media_id: result.videoId,
       post_id: result.postId,
@@ -546,6 +593,7 @@ const postVideo = async (userId, providerId, videoUrl, mediaType, caption, title
     throw err;
   }
 };
+
 /**
  * Fetch live provider stats for dashboard
  */
@@ -603,6 +651,7 @@ const getProviderStats = async (userId, providerId) => {
   }
   return baseResponse;
 };
+
 module.exports = {
   getOAuthUrl,
   connect,
