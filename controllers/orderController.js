@@ -73,6 +73,7 @@ class OrderController {
         height: height != null ? height : 5,
         cod: !!cod,
         declaredValue: declaredValue || 0,
+        userId: req.user?.id || null,
       });
       res.status(200).json({
         success: true,

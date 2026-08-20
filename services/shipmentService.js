@@ -1,14 +1,116 @@
 const axios = require('axios');
-const { Provider, PickupLocation } = require('../models');
+const { Provider, PickupLocation, Product } = require('../models');
+
+/** Default weight (kg) for a saree/dress when product.weight is missing or zero */
+const DEFAULT_PRODUCT_WEIGHT_KG = 0.5;
+const DEFAULT_LENGTH_CM = 30;
+const DEFAULT_BREADTH_CM = 25;
+const DEFAULT_HEIGHT_CM = 5;
+
+/**
+ * Sum package weight/dims from line items (cart or order items).
+ * Weight = sum(product.weight * qty); missing weight uses DEFAULT_PRODUCT_WEIGHT_KG.
+ * Dimensions = max of each axis across items (cm).
+ */
+const computePackageFromItems = (items) => {
+  let totalWeight = 0;
+  let maxLength = 0;
+  let maxBreadth = 0;
+  let maxHeight = 0;
+  let count = 0;
+
+  (items || []).forEach((item) => {
+    const product = item.product || item;
+    const qty = Math.max(1, parseInt(item.quantity, 10) || 1);
+    count += qty;
+
+    const rawW = parseFloat(product?.weight);
+    const unitWeight =
+      !Number.isNaN(rawW) && rawW > 0 ? rawW : DEFAULT_PRODUCT_WEIGHT_KG;
+    totalWeight += unitWeight * qty;
+
+    const l = parseFloat(product?.length);
+    const b = parseFloat(product?.breadth);
+    const h = parseFloat(product?.height);
+    if (!Number.isNaN(l) && l > maxLength) maxLength = l;
+    if (!Number.isNaN(b) && b > maxBreadth) maxBreadth = b;
+    if (!Number.isNaN(h) && h > maxHeight) maxHeight = h;
+  });
+
+  if (count === 0) {
+    return {
+      weight: DEFAULT_PRODUCT_WEIGHT_KG,
+      length: DEFAULT_LENGTH_CM,
+      breadth: DEFAULT_BREADTH_CM,
+      height: DEFAULT_HEIGHT_CM,
+    };
+  }
+
+  return {
+    weight: Math.max(0.1, totalWeight),
+    length: maxLength > 0 ? maxLength : DEFAULT_LENGTH_CM,
+    breadth: maxBreadth > 0 ? maxBreadth : DEFAULT_BREADTH_CM,
+    height: maxHeight > 0 ? maxHeight : DEFAULT_HEIGHT_CM,
+  };
+};
+
+/**
+ * Load authenticated user's cart and resolve product dimensions/weights from DB.
+ */
+const getCartPackageForUser = async (userId) => {
+  if (!userId) return null;
+  try {
+    // Lazy require avoids circular dependency with orderService/cartService
+    const cartService = require('./cartService');
+    const items = await cartService.getCart(userId);
+    if (!items || items.length === 0) return null;
+
+    const enriched = [];
+    for (const item of items) {
+      const productId = item.productId || item.product?.id;
+      let product = item.product;
+      const needsDims =
+        !product ||
+        product.weight == null ||
+        product.weight === undefined;
+      if (productId && needsDims) {
+        const full = await Product.findByPk(productId, {
+          attributes: [
+            'id',
+            'name',
+            'weight',
+            'length',
+            'breadth',
+            'height',
+            'defaultSku',
+          ],
+        });
+        if (full) product = full.toJSON ? full.toJSON() : full;
+      }
+      enriched.push({
+        quantity: item.quantity || 1,
+        product: product || item.product || {},
+        productId,
+      });
+    }
+    return computePackageFromItems(enriched);
+  } catch (e) {
+    console.warn('getCartPackageForUser failed:', e.message);
+    return null;
+  }
+};
+
 const SHIPROCKET_BASE = {
   production: 'https://apiv2.shiprocket.in/v1/external',
   sandbox: 'https://apiv2.shiprocket.in/v1/external',
 };
+
 let tokenCache = {
   token: null,
   expiresAt: 0,
   providerId: null,
 };
+
 const getEnabledShiprocketProvider = async () => {
   const provider = await Provider.findOne({
     where: {
@@ -27,6 +129,7 @@ const getEnabledShiprocketProvider = async () => {
   }
   return provider;
 };
+
 const getProviderById = async (id) => {
   const provider = await Provider.findByPk(id);
   if (!provider || provider.provider_type !== 'shipment' || !provider.is_enabled) {
@@ -36,6 +139,7 @@ const getProviderById = async (id) => {
   }
   return provider;
 };
+
 const getShiprocketToken = async (provider) => {
   const now = Date.now();
   if (
@@ -49,7 +153,9 @@ const getShiprocketToken = async (provider) => {
   const email = creds.email;
   const password = creds.password;
   if (!email || !password) {
-    const err = new Error('Shiprocket credentials incomplete (email and password required)');
+    const err = new Error(
+      'Shiprocket credentials incomplete (email and password required)'
+    );
     err.status = 400;
     throw err;
   }
@@ -77,6 +183,7 @@ const getShiprocketToken = async (provider) => {
     throw err;
   }
 };
+
 const getDefaultPickupLocation = async () => {
   const loc = await PickupLocation.findOne({
     where: { isDefault: true, isActive: true },
@@ -84,11 +191,16 @@ const getDefaultPickupLocation = async () => {
   if (loc) return loc;
   return await PickupLocation.findOne({ where: { isActive: true } });
 };
+
 const getShippingRates = async ({
   deliveryPincode,
   weight = 0.5,
+  length,
+  breadth,
+  height,
   cod = 0,
   declaredValue = 0,
+  userId = null,
 }) => {
   if (!deliveryPincode || String(deliveryPincode).trim().length < 5) {
     const err = new Error('Valid delivery pincode is required');
@@ -104,6 +216,25 @@ const getShippingRates = async ({
     err.status = 400;
     throw err;
   }
+
+  // Prefer total weight from cart products (default per item if weight missing)
+  let pkg = null;
+  if (userId) {
+    pkg = await getCartPackageForUser(userId);
+  }
+  const finalWeight = pkg
+    ? pkg.weight
+    : Math.max(0.1, parseFloat(weight) || DEFAULT_PRODUCT_WEIGHT_KG);
+  const finalLength = pkg
+    ? pkg.length
+    : Math.max(1, parseFloat(length) || DEFAULT_LENGTH_CM);
+  const finalBreadth = pkg
+    ? pkg.breadth
+    : Math.max(1, parseFloat(breadth) || DEFAULT_BREADTH_CM);
+  const finalHeight = pkg
+    ? pkg.height
+    : Math.max(1, parseFloat(height) || DEFAULT_HEIGHT_CM);
+
   const pickupPincode = String(pickup.zipCode).trim();
   const token = await getShiprocketToken(provider);
   const env = (provider.credentials?.environment || 'production').toLowerCase();
@@ -117,7 +248,10 @@ const getShippingRates = async ({
       params: {
         pickup_postcode: pickupPincode,
         delivery_postcode: String(deliveryPincode).trim(),
-        weight: Math.max(0.1, parseFloat(weight) || 0.5),
+        weight: finalWeight,
+        length: finalLength,
+        breadth: finalBreadth,
+        height: finalHeight,
         cod: cod ? 1 : 0,
         declared_value: declaredValue || 0,
       },
@@ -127,7 +261,7 @@ const getShippingRates = async ({
     const rates = available.map((c) => ({
       courierCompanyId: String(c.courier_company_id),
       courierName: c.courier_name || c.courier_company_name || 'Courier',
-      rate: parseFloat(c.rate) || 0,
+      rate: parseFloat(c.rate) || parseFloat(c.freight_charge) || 0,
       estimatedDays:
         parseInt(c.estimated_delivery_days, 10) || parseInt(c.etd, 10) || null,
       etd: c.etd || null,
@@ -143,6 +277,12 @@ const getShippingRates = async ({
       deliveryPincode: String(deliveryPincode).trim(),
       providerId: provider.id,
       providerName: provider.name,
+      package: {
+        weight: finalWeight,
+        length: finalLength,
+        breadth: finalBreadth,
+        height: finalHeight,
+      },
     };
   } catch (e) {
     const msg =
@@ -157,14 +297,9 @@ const getShippingRates = async ({
     throw err;
   }
 };
+
 /**
  * Parse multi-line shipping address text (as stored on orders) into structured fields.
- * Format typically:
- *   Full Name
- *   Street, Apartment
- *   City, State - PIN
- *   Country
- *   Phone: xxxxx
  */
 const parseShippingAddressText = (text) => {
   const result = {
@@ -184,22 +319,18 @@ const parseShippingAddressText = (text) => {
     .map((l) => l.trim())
     .filter(Boolean);
   if (lines.length === 0) return result;
-  // Name is first line (unless it looks like phone)
   if (!/^Phone:/i.test(lines[0])) {
     result.fullName = lines[0];
   }
-  // Find phone
   for (const line of lines) {
     if (/^Phone:/i.test(line)) {
       result.phone = line.replace(/^Phone:\s*/i, '').trim();
     }
-    // Also catch standalone 10-digit phone
     const phoneMatch = line.match(/(?:\+91[\s-]?)?([6-9]\d{9})\b/);
     if (phoneMatch && !result.phone) {
       result.phone = phoneMatch[1];
     }
   }
-  // Find 6-digit pincode anywhere
   for (const line of lines) {
     const pinMatch = line.match(/\b(\d{6})\b/);
     if (pinMatch) {
@@ -207,7 +338,6 @@ const parseShippingAddressText = (text) => {
       break;
     }
   }
-  // Country
   for (const line of lines) {
     if (
       /^(India|United States|United Kingdom|Canada|Australia|Germany|France)$/i.test(
@@ -217,7 +347,6 @@ const parseShippingAddressText = (text) => {
       result.country = line;
     }
   }
-  // Street: usually second line
   const nonMeta = lines.filter(
     (l) =>
       !/^Phone:/i.test(l) &&
@@ -227,7 +356,6 @@ const parseShippingAddressText = (text) => {
       l !== result.fullName
   );
   if (nonMeta.length >= 1) {
-    // First non-meta after name is street (may include apartment)
     const streetLine = nonMeta[0];
     const streetParts = streetLine.split(',').map((p) => p.trim());
     result.streetAddress = streetParts[0] || streetLine;
@@ -235,23 +363,13 @@ const parseShippingAddressText = (text) => {
       result.apartment = streetParts.slice(1).join(', ');
     }
   }
-  // City / State line: "City, State - PIN" or "City, State PIN"
   if (nonMeta.length >= 2) {
     let cityLine = nonMeta[1];
-    // Remove pincode from this line for cleaner parse
     cityLine = cityLine.replace(/\s*[-,]?\s*\d{6}\s*$/, '').trim();
     const parts = cityLine.split(',').map((p) => p.trim()).filter(Boolean);
     if (parts[0]) result.city = parts[0];
     if (parts[1]) result.state = parts[1];
-    // Sometimes only "City State"
-    if (!result.state && parts[0]) {
-      const words = parts[0].split(/\s+/);
-      if (words.length >= 2) {
-        // leave as city; state may be missing
-      }
-    }
   }
-  // If city still empty, try third line
   if (!result.city && nonMeta.length >= 3) {
     let cityLine = nonMeta[2].replace(/\s*[-,]?\s*\d{6}\s*$/, '').trim();
     const parts = cityLine.split(',').map((p) => p.trim()).filter(Boolean);
@@ -260,10 +378,7 @@ const parseShippingAddressText = (text) => {
   }
   return result;
 };
-/**
- * Ensure address object has all fields Shiprocket requires.
- * Fills gaps from order.user when available.
- */
+
 const buildCompleteAddress = (addrObj, order) => {
   const user = order?.user || {};
   const addr = { ...(addrObj || {}) };
@@ -280,7 +395,6 @@ const buildCompleteAddress = (addrObj, order) => {
     addr.country = 'India';
   }
   if (!addr.streetAddress || !String(addr.streetAddress).trim()) {
-    // last resort: use first line of raw shippingAddress
     const raw = order?.shippingAddress || order?.billingAddress || '';
     const firstLine = String(raw)
       .split(/\r?\n/)
@@ -294,7 +408,6 @@ const buildCompleteAddress = (addrObj, order) => {
   if (!addr.state || !String(addr.state).trim()) {
     addr.state = 'Unknown';
   }
-  // Normalize phone to 10 digits when possible
   if (addr.phone) {
     const digits = String(addr.phone).replace(/\D/g, '');
     addr.phone = digits.length >= 10 ? digits.slice(-10) : digits || '9999999999';
@@ -303,6 +416,7 @@ const buildCompleteAddress = (addrObj, order) => {
   }
   return addr;
 };
+
 const validateAddressForShiprocket = (addr) => {
   const missing = [];
   if (!addr.streetAddress || addr.streetAddress === 'Address not specified') {
@@ -324,6 +438,7 @@ const validateAddressForShiprocket = (addr) => {
     throw err;
   }
 };
+
 const createShiprocketOrder = async (
   order,
   orderItems,
@@ -340,7 +455,6 @@ const createShiprocketOrder = async (
     throw err;
   }
   let addr = buildCompleteAddress(shippingAddressObj, order);
-  // If still weak, re-parse from order text
   if (
     !addr.zipCode ||
     addr.city === 'Unknown' ||
@@ -384,6 +498,8 @@ const createShiprocketOrder = async (
     parseFloat(order.total) - (parseFloat(order.shippingAmount) || 0) ||
     parseFloat(order.total) ||
     1;
+  const packageDims = computePackageFromItems(orderItems);
+
   const payload = {
     order_id: String(order.merchantOrderId || `ORD-${order.id}`),
     order_date: new Date().toISOString().slice(0, 19).replace('T', ' '),
@@ -402,10 +518,10 @@ const createShiprocketOrder = async (
     order_items: orderItemsPayload,
     payment_method: order.paymentStatus === 'cod' ? 'COD' : 'Prepaid',
     sub_total: Math.max(1, subTotal),
-    length: 10,
-    breadth: 10,
-    height: 5,
-    weight: 0.5,
+    length: packageDims.length,
+    breadth: packageDims.breadth,
+    height: packageDims.height,
+    weight: packageDims.weight,
   };
   if (selectedCourier?.courierCompanyId) {
     payload.courier_id = selectedCourier.courierCompanyId;
@@ -434,7 +550,6 @@ const createShiprocketOrder = async (
         : null) ||
       e.message ||
       'Failed to create Shiprocket order';
-    // Normalize Shiprocket's vague address error
     let friendly = apiMsg;
     if (
       /billing\/shipping address|add billing|shipping address first/i.test(
@@ -461,6 +576,7 @@ const createShiprocketOrder = async (
     };
   }
 };
+
 const trackShipment = async (order) => {
   if (!order.shiprocketShipmentId && !order.awbCode) {
     const err = new Error('No Shiprocket shipment ID or AWB on this order');
@@ -510,6 +626,7 @@ const trackShipment = async (order) => {
     throw err;
   }
 };
+
 const cancelShipment = async (order) => {
   if (!order.shiprocketOrderId && !order.awbCode) {
     const err = new Error('No Shiprocket order/AWB to cancel');
@@ -547,6 +664,7 @@ const cancelShipment = async (order) => {
     throw err;
   }
 };
+
 const getEnabledShipmentProviders = async () => {
   const providers = await Provider.findAll({
     where: {
@@ -562,6 +680,7 @@ const getEnabledShipmentProviders = async () => {
     is_enabled: p.is_enabled,
   }));
 };
+
 module.exports = {
   getShippingRates,
   createShiprocketOrder,
@@ -575,4 +694,7 @@ module.exports = {
   parseShippingAddressText,
   buildCompleteAddress,
   validateAddressForShiprocket,
+  computePackageFromItems,
+  getCartPackageForUser,
+  DEFAULT_PRODUCT_WEIGHT_KG,
 };
