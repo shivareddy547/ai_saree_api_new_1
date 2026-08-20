@@ -1,12 +1,10 @@
 const axios = require('axios');
 const { Provider, PickupLocation, Product } = require('../models');
-
 /** Default weight (kg) for a saree/dress when product.weight is missing or zero */
 const DEFAULT_PRODUCT_WEIGHT_KG = 0.5;
 const DEFAULT_LENGTH_CM = 30;
 const DEFAULT_BREADTH_CM = 25;
 const DEFAULT_HEIGHT_CM = 5;
-
 /**
  * Sum package weight/dims from line items (cart or order items).
  * Weight = sum(product.weight * qty); missing weight uses DEFAULT_PRODUCT_WEIGHT_KG.
@@ -18,17 +16,14 @@ const computePackageFromItems = (items) => {
   let maxBreadth = 0;
   let maxHeight = 0;
   let count = 0;
-
   (items || []).forEach((item) => {
     const product = item.product || item;
     const qty = Math.max(1, parseInt(item.quantity, 10) || 1);
     count += qty;
-
     const rawW = parseFloat(product?.weight);
     const unitWeight =
       !Number.isNaN(rawW) && rawW > 0 ? rawW : DEFAULT_PRODUCT_WEIGHT_KG;
     totalWeight += unitWeight * qty;
-
     const l = parseFloat(product?.length);
     const b = parseFloat(product?.breadth);
     const h = parseFloat(product?.height);
@@ -36,7 +31,6 @@ const computePackageFromItems = (items) => {
     if (!Number.isNaN(b) && b > maxBreadth) maxBreadth = b;
     if (!Number.isNaN(h) && h > maxHeight) maxHeight = h;
   });
-
   if (count === 0) {
     return {
       weight: DEFAULT_PRODUCT_WEIGHT_KG,
@@ -45,7 +39,6 @@ const computePackageFromItems = (items) => {
       height: DEFAULT_HEIGHT_CM,
     };
   }
-
   return {
     weight: Math.max(0.1, totalWeight),
     length: maxLength > 0 ? maxLength : DEFAULT_LENGTH_CM,
@@ -53,18 +46,15 @@ const computePackageFromItems = (items) => {
     height: maxHeight > 0 ? maxHeight : DEFAULT_HEIGHT_CM,
   };
 };
-
 /**
  * Load authenticated user's cart and resolve product dimensions/weights from DB.
  */
 const getCartPackageForUser = async (userId) => {
   if (!userId) return null;
   try {
-    // Lazy require avoids circular dependency with orderService/cartService
     const cartService = require('./cartService');
     const items = await cartService.getCart(userId);
     if (!items || items.length === 0) return null;
-
     const enriched = [];
     for (const item of items) {
       const productId = item.productId || item.product?.id;
@@ -99,18 +89,19 @@ const getCartPackageForUser = async (userId) => {
     return null;
   }
 };
-
 const SHIPROCKET_BASE = {
   production: 'https://apiv2.shiprocket.in/v1/external',
   sandbox: 'https://apiv2.shiprocket.in/v1/external',
 };
-
+const DELHIVERY_BASE = {
+  production: 'https://track.delhivery.com',
+  sandbox: 'https://track.delhivery.com',
+};
 let tokenCache = {
   token: null,
   expiresAt: 0,
   providerId: null,
 };
-
 const getEnabledShiprocketProvider = async () => {
   const provider = await Provider.findOne({
     where: {
@@ -129,7 +120,24 @@ const getEnabledShiprocketProvider = async () => {
   }
   return provider;
 };
-
+const getEnabledDelhiveryProvider = async () => {
+  const provider = await Provider.findOne({
+    where: {
+      provider_type: 'shipment',
+      provider_key: 'delhivery',
+      is_enabled: true,
+    },
+    order: [['createdAt', 'DESC']],
+  });
+  if (!provider) {
+    const err = new Error(
+      'No enabled Delhivery provider found. Please configure and enable it in Shipment Providers Setup.'
+    );
+    err.status = 400;
+    throw err;
+  }
+  return provider;
+};
 const getProviderById = async (id) => {
   const provider = await Provider.findByPk(id);
   if (!provider || provider.provider_type !== 'shipment' || !provider.is_enabled) {
@@ -139,7 +147,6 @@ const getProviderById = async (id) => {
   }
   return provider;
 };
-
 const getShiprocketToken = async (provider) => {
   const now = Date.now();
   if (
@@ -183,7 +190,18 @@ const getShiprocketToken = async (provider) => {
     throw err;
   }
 };
-
+const getDelhiveryToken = (provider) => {
+  const creds = provider.credentials || {};
+  const token = creds.api_token || creds.token || creds.api_key;
+  if (!token) {
+    const err = new Error(
+      'Delhivery credentials incomplete (api_token required)'
+    );
+    err.status = 400;
+    throw err;
+  }
+  return token;
+};
 const getDefaultPickupLocation = async () => {
   const loc = await PickupLocation.findOne({
     where: { isDefault: true, isActive: true },
@@ -191,7 +209,161 @@ const getDefaultPickupLocation = async () => {
   if (loc) return loc;
   return await PickupLocation.findOne({ where: { isActive: true } });
 };
-
+/**
+ * Fetch rates from a single Shiprocket provider.
+ */
+const getShiprocketRates = async (provider, {
+  pickupPincode,
+  deliveryPincode,
+  finalWeight,
+  finalLength,
+  finalBreadth,
+  finalHeight,
+  cod,
+  declaredValue,
+}) => {
+  const token = await getShiprocketToken(provider);
+  const env = (provider.credentials?.environment || 'production').toLowerCase();
+  const base = SHIPROCKET_BASE[env] || SHIPROCKET_BASE.production;
+  const res = await axios.get(`${base}/courier/serviceability/`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    params: {
+      pickup_postcode: pickupPincode,
+      delivery_postcode: String(deliveryPincode).trim(),
+      weight: finalWeight,
+      length: finalLength,
+      breadth: finalBreadth,
+      height: finalHeight,
+      cod: cod ? 1 : 0,
+      declared_value: declaredValue || 0,
+    },
+  });
+  const data = res.data?.data || {};
+  const available = data.available_courier_companies || [];
+  return available.map((c) => ({
+    courierCompanyId: `shiprocket-${c.courier_company_id}`,
+    courierName: c.courier_name || c.courier_company_name || 'Courier',
+    rate: parseFloat(c.rate) || parseFloat(c.freight_charge) || 0,
+    estimatedDays:
+      parseInt(c.estimated_delivery_days, 10) || parseInt(c.etd, 10) || null,
+    etd: c.etd || null,
+    freightCharge: parseFloat(c.freight_charge) || parseFloat(c.rate) || 0,
+    codCharges: parseFloat(c.cod_charges) || 0,
+    isSurface: !!c.is_surface,
+    rating: c.rating || null,
+    providerId: provider.id,
+    providerKey: 'shiprocket',
+    providerName: provider.name || 'Shiprocket',
+    rawCourierId: String(c.courier_company_id),
+  }));
+};
+/**
+ * Fetch rates from a single Delhivery provider (Surface + Express).
+ * Weight for Delhivery API is in grams (cgm).
+ */
+const getDelhiveryRates = async (provider, {
+  pickupPincode,
+  deliveryPincode,
+  finalWeight,
+  cod,
+}) => {
+  const token = getDelhiveryToken(provider);
+  const env = (provider.credentials?.environment || 'production').toLowerCase();
+  const base = DELHIVERY_BASE[env] || DELHIVERY_BASE.production;
+  const weightGrams = Math.max(1, Math.round(finalWeight * 1000));
+  const fetchMode = async (mode) => {
+    const res = await axios.get(
+      `${base}/api/kinko/v1/invoice/charges/.json`,
+      {
+        headers: {
+          Authorization: `Token ${token}`,
+          Accept: 'application/json',
+        },
+        params: {
+          md: mode,
+          cgm: weightGrams,
+          o_pin: pickupPincode,
+          d_pin: String(deliveryPincode).trim(),
+          ss: 'Delivered',
+        },
+      }
+    );
+    return res.data;
+  };
+  const rates = [];
+  try {
+    const surfaceResp = await fetchMode('S');
+    let surfaceRate =
+      (Array.isArray(surfaceResp) && surfaceResp[0]?.total_amount) ||
+      surfaceResp?.total_amount ||
+      null;
+    if (surfaceRate == null || surfaceRate === '') {
+      const nested = JSON.stringify(surfaceResp);
+      const m = nested.match(/"total_amount"\s*:\s*([0-9.]+)/);
+      if (m) surfaceRate = parseFloat(m[1]);
+    }
+    if (surfaceRate != null && surfaceRate !== '' && !Number.isNaN(parseFloat(surfaceRate))) {
+      rates.push({
+        courierCompanyId: 'delhivery-S',
+        courierName: 'Delhivery Surface',
+        rate: parseFloat(surfaceRate) || 0,
+        estimatedDays: 3,
+        etd: '1-3 days',
+        freightCharge: parseFloat(surfaceRate) || 0,
+        codCharges: 0,
+        isSurface: true,
+        rating: null,
+        providerId: provider.id,
+        providerKey: 'delhivery',
+        providerName: provider.name || 'Delhivery',
+        rawCourierId: 'S',
+        shippingMode: 'Surface',
+      });
+    }
+  } catch (e) {
+    console.warn('Delhivery Surface rate failed:', e.response?.data || e.message);
+  }
+  try {
+    const expressResp = await fetchMode('E');
+    let expressRate =
+      (Array.isArray(expressResp) && expressResp[0]?.total_amount) ||
+      expressResp?.total_amount ||
+      null;
+    if (expressRate == null || expressRate === '') {
+      const nested = JSON.stringify(expressResp);
+      const m = nested.match(/"total_amount"\s*:\s*([0-9.]+)/);
+      if (m) expressRate = parseFloat(m[1]);
+    }
+    if (expressRate != null && expressRate !== '' && !Number.isNaN(parseFloat(expressRate))) {
+      rates.push({
+        courierCompanyId: 'delhivery-E',
+        courierName: 'Delhivery Express',
+        rate: parseFloat(expressRate) || 0,
+        estimatedDays: 2,
+        etd: '1-2 days',
+        freightCharge: parseFloat(expressRate) || 0,
+        codCharges: 0,
+        isSurface: false,
+        rating: null,
+        providerId: provider.id,
+        providerKey: 'delhivery',
+        providerName: provider.name || 'Delhivery',
+        rawCourierId: 'E',
+        shippingMode: 'Express',
+      });
+    }
+  } catch (e) {
+    console.warn('Delhivery Express rate failed:', e.response?.data || e.message);
+  }
+  return rates;
+};
+/**
+ * Retrieve shipping rates from EVERY enabled shipment provider.
+ * Returns combined, sorted list so the user can pick any option.
+ */
 const getShippingRates = async ({
   deliveryPincode,
   weight = 0.5,
@@ -207,7 +379,6 @@ const getShippingRates = async ({
     err.status = 400;
     throw err;
   }
-  const provider = await getEnabledShiprocketProvider();
   const pickup = await getDefaultPickupLocation();
   if (!pickup || !pickup.zipCode) {
     const err = new Error(
@@ -216,8 +387,6 @@ const getShippingRates = async ({
     err.status = 400;
     throw err;
   }
-
-  // Prefer total weight from cart products (default per item if weight missing)
   let pkg = null;
   if (userId) {
     pkg = await getCartPackageForUser(userId);
@@ -234,70 +403,87 @@ const getShippingRates = async ({
   const finalHeight = pkg
     ? pkg.height
     : Math.max(1, parseFloat(height) || DEFAULT_HEIGHT_CM);
-
   const pickupPincode = String(pickup.zipCode).trim();
-  const token = await getShiprocketToken(provider);
-  const env = (provider.credentials?.environment || 'production').toLowerCase();
-  const base = SHIPROCKET_BASE[env] || SHIPROCKET_BASE.production;
-  try {
-    const res = await axios.get(`${base}/courier/serviceability/`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      params: {
-        pickup_postcode: pickupPincode,
-        delivery_postcode: String(deliveryPincode).trim(),
-        weight: finalWeight,
-        length: finalLength,
-        breadth: finalBreadth,
-        height: finalHeight,
-        cod: cod ? 1 : 0,
-        declared_value: declaredValue || 0,
-      },
-    });
-    const data = res.data?.data || {};
-    const available = data.available_courier_companies || [];
-    const rates = available.map((c) => ({
-      courierCompanyId: String(c.courier_company_id),
-      courierName: c.courier_name || c.courier_company_name || 'Courier',
-      rate: parseFloat(c.rate) || parseFloat(c.freight_charge) || 0,
-      estimatedDays:
-        parseInt(c.estimated_delivery_days, 10) || parseInt(c.etd, 10) || null,
-      etd: c.etd || null,
-      freightCharge: parseFloat(c.freight_charge) || parseFloat(c.rate) || 0,
-      codCharges: parseFloat(c.cod_charges) || 0,
-      isSurface: !!c.is_surface,
-      rating: c.rating || null,
-    }));
-    rates.sort((a, b) => a.rate - b.rate);
-    return {
-      rates,
-      pickupPincode,
-      deliveryPincode: String(deliveryPincode).trim(),
-      providerId: provider.id,
-      providerName: provider.name,
-      package: {
-        weight: finalWeight,
-        length: finalLength,
-        breadth: finalBreadth,
-        height: finalHeight,
-      },
-    };
-  } catch (e) {
-    const msg =
-      e.response?.data?.message ||
-      (Array.isArray(e.response?.data?.errors)
-        ? e.response.data.errors.join(', ')
-        : null) ||
-      e.message ||
-      'Failed to fetch shipping rates from Shiprocket';
-    const err = new Error(msg);
-    err.status = e.response?.status || 502;
+  const enabledProviders = await Provider.findAll({
+    where: {
+      provider_type: 'shipment',
+      is_enabled: true,
+    },
+    order: [['createdAt', 'DESC']],
+  });
+  if (!enabledProviders || enabledProviders.length === 0) {
+    const err = new Error(
+      'No enabled shipment providers found. Please configure and enable a provider in Shipment Providers Setup.'
+    );
+    err.status = 400;
     throw err;
   }
+  const allRates = [];
+  const errors = [];
+  for (const provider of enabledProviders) {
+    const key = (provider.provider_key || '').toLowerCase();
+    try {
+      if (key === 'shiprocket') {
+        const rates = await getShiprocketRates(provider, {
+          pickupPincode,
+          deliveryPincode,
+          finalWeight,
+          finalLength,
+          finalBreadth,
+          finalHeight,
+          cod,
+          declaredValue,
+        });
+        allRates.push(...rates);
+      } else if (key === 'delhivery') {
+        const rates = await getDelhiveryRates(provider, {
+          pickupPincode,
+          deliveryPincode,
+          finalWeight,
+          cod,
+        });
+        allRates.push(...rates);
+      } else {
+        console.warn(`Shipping rates not implemented for provider_key=${key}`);
+      }
+    } catch (e) {
+      const msg =
+        e.response?.data?.message ||
+        (Array.isArray(e.response?.data?.errors)
+          ? e.response.data.errors.join(', ')
+          : null) ||
+        e.message ||
+        `Failed to fetch rates from ${provider.name}`;
+      errors.push({ providerId: provider.id, providerName: provider.name, message: msg });
+      console.error(`Rates error [${provider.name}]:`, msg);
+    }
+  }
+  allRates.sort((a, b) => a.rate - b.rate);
+  if (allRates.length === 0) {
+    const detail =
+      errors.length > 0
+        ? errors.map((e) => `${e.providerName}: ${e.message}`).join('; ')
+        : 'No shipping options available for this pincode.';
+    const err = new Error(detail);
+    err.status = 502;
+    throw err;
+  }
+  const primaryProviderId = allRates[0]?.providerId || enabledProviders[0].id;
+  return {
+    rates: allRates,
+    pickupPincode,
+    deliveryPincode: String(deliveryPincode).trim(),
+    providerId: primaryProviderId,
+    providerName: allRates[0]?.providerName || null,
+    package: {
+      weight: finalWeight,
+      length: finalLength,
+      breadth: finalBreadth,
+      height: finalHeight,
+    },
+    errors: errors.length > 0 ? errors : undefined,
+  };
 };
-
 /**
  * Parse multi-line shipping address text (as stored on orders) into structured fields.
  */
@@ -378,7 +564,6 @@ const parseShippingAddressText = (text) => {
   }
   return result;
 };
-
 const buildCompleteAddress = (addrObj, order) => {
   const user = order?.user || {};
   const addr = { ...(addrObj || {}) };
@@ -416,7 +601,6 @@ const buildCompleteAddress = (addrObj, order) => {
   }
   return addr;
 };
-
 const validateAddressForShiprocket = (addr) => {
   const missing = [];
   if (!addr.streetAddress || addr.streetAddress === 'Address not specified') {
@@ -432,57 +616,47 @@ const validateAddressForShiprocket = (addr) => {
     const err = new Error(
       `Cannot create shipment: order shipping address is incomplete (missing ${missing.join(
         ', '
-      )}). Please ensure the order has a full shipping address with pincode.`
+      )})`
     );
     err.status = 400;
     throw err;
   }
 };
-
-const createShiprocketOrder = async (
-  order,
-  orderItems,
-  shippingAddressObj,
-  selectedCourier
-) => {
-  const provider = selectedCourier?.shipmentProviderId
+/**
+ * Create order on Shiprocket.
+ */
+const createShiprocketOrder = async (order, orderItems, addrObj, selectedCourier = {}) => {
+  const provider = selectedCourier.shipmentProviderId
     ? await getProviderById(selectedCourier.shipmentProviderId)
     : await getEnabledShiprocketProvider();
-  const pickup = await getDefaultPickupLocation();
-  if (!pickup) {
-    const err = new Error('No default pickup location configured');
-    err.status = 400;
-    throw err;
-  }
-  let addr = buildCompleteAddress(shippingAddressObj, order);
-  if (
-    !addr.zipCode ||
-    addr.city === 'Unknown' ||
-    addr.streetAddress === 'Address not specified'
-  ) {
-    const parsed = parseShippingAddressText(
-      order.shippingAddress || order.billingAddress || ''
-    );
-    addr = buildCompleteAddress({ ...parsed, ...addr }, order);
-  }
-  validateAddressForShiprocket(addr);
   const token = await getShiprocketToken(provider);
   const env = (provider.credentials?.environment || 'production').toLowerCase();
   const base = SHIPROCKET_BASE[env] || SHIPROCKET_BASE.production;
-  const billingName = String(addr.fullName).trim() || 'Customer';
-  const nameParts = billingName.split(/\s+/);
+  const pickup = await getDefaultPickupLocation();
+  if (!pickup) {
+    const err = new Error('No active pickup location configured');
+    err.status = 400;
+    throw err;
+  }
+  const addr = buildCompleteAddress(addrObj, order);
+  validateAddressForShiprocket(addr);
+  const nameParts = String(addr.fullName || 'Customer').trim().split(/\s+/);
   const firstName = nameParts[0] || 'Customer';
   const lastName = nameParts.slice(1).join(' ') || '';
-  const billingPhone = String(addr.phone).replace(/\D/g, '').slice(-10) || '9999999999';
-  const orderItemsPayload = (orderItems || []).map((item) => ({
-    name: item.product?.name || item.name || 'Product',
-    sku: item.variant?.sku || item.product?.defaultSku || `SKU-${item.productId}`,
-    units: item.quantity || 1,
-    selling_price: parseFloat(item.price) || 0,
-    discount: 0,
-    tax: 0,
-    hsn: 0,
-  }));
+  const billingPhone = addr.phone || '9999999999';
+  const orderItemsPayload = (orderItems || []).map((item) => {
+    const product = item.product || {};
+    const variant = item.variant || {};
+    return {
+      name: product.name || 'Product',
+      sku: variant.sku || product.defaultSku || `SKU-${item.productId || item.id}`,
+      units: item.quantity || 1,
+      selling_price: parseFloat(item.price) || parseFloat(order.total) || 1,
+      discount: 0,
+      tax: 0,
+      hsn: 0,
+    };
+  });
   if (orderItemsPayload.length === 0) {
     orderItemsPayload.push({
       name: 'Order Item',
@@ -499,7 +673,12 @@ const createShiprocketOrder = async (
     parseFloat(order.total) ||
     1;
   const packageDims = computePackageFromItems(orderItems);
-
+  let courierId = selectedCourier.courierCompanyId
+    ? String(selectedCourier.courierCompanyId)
+    : null;
+  if (courierId && courierId.startsWith('shiprocket-')) {
+    courierId = courierId.replace(/^shiprocket-/, '');
+  }
   const payload = {
     order_id: String(order.merchantOrderId || `ORD-${order.id}`),
     order_date: new Date().toISOString().slice(0, 19).replace('T', ' '),
@@ -523,8 +702,8 @@ const createShiprocketOrder = async (
     height: packageDims.height,
     weight: packageDims.weight,
   };
-  if (selectedCourier?.courierCompanyId) {
-    payload.courier_id = selectedCourier.courierCompanyId;
+  if (courierId) {
+    payload.courier_id = courierId;
   }
   try {
     const res = await axios.post(`${base}/orders/create/adhoc`, payload, {
@@ -541,6 +720,7 @@ const createShiprocketOrder = async (
       status: data.status || data.status_code || null,
       raw: data,
       providerId: provider.id,
+      providerKey: 'shiprocket',
     };
   } catch (e) {
     const apiMsg =
@@ -559,65 +739,343 @@ const createShiprocketOrder = async (
       friendly =
         'Shiprocket rejected the address. Ensure the order has a complete shipping address with street, city and 6-digit pincode.';
     }
-    console.error('Shiprocket create order error:', apiMsg, 'payload address:', {
-      billing_address: payload.billing_address,
-      billing_city: payload.billing_city,
-      billing_pincode: payload.billing_pincode,
-      billing_state: payload.billing_state,
-    });
     return {
+      error: friendly,
       shiprocketOrderId: null,
       shiprocketShipmentId: null,
       awbCode: null,
-      status: 'failed',
-      error: friendly,
-      raw: e.response?.data || null,
+      status: 'Fail',
+      raw: e.response?.data || { message: apiMsg },
       providerId: provider.id,
+      providerKey: 'shiprocket',
     };
   }
 };
-
-const trackShipment = async (order) => {
-  if (!order.shiprocketShipmentId && !order.awbCode) {
-    const err = new Error('No Shiprocket shipment ID or AWB on this order');
+/**
+ * Ensure Delhivery warehouse/pickup location exists (idempotent).
+ */
+const ensureDelhiveryWarehouse = async (provider, pickup, addr) => {
+  const token = getDelhiveryToken(provider);
+  const env = (provider.credentials?.environment || 'production').toLowerCase();
+  const base = DELHIVERY_BASE[env] || DELHIVERY_BASE.production;
+  const name = pickup.name || 'Primary';
+  const payload = {
+    name,
+    registered_name: name,
+    phone: addr.phone || pickup.phone || '9999999999',
+    email: addr.email || 'store@example.com',
+    address: [pickup.street_address || pickup.streetAddress, pickup.apartment]
+      .filter(Boolean)
+      .join(', ') || 'Warehouse',
+    city: pickup.city || 'Unknown',
+    state: pickup.state || 'Unknown',
+    country: pickup.country || 'India',
+    pin: String(pickup.zip_code || pickup.zipCode || '').trim(),
+    return_address: [pickup.street_address || pickup.streetAddress, pickup.apartment]
+      .filter(Boolean)
+      .join(', ') || 'Warehouse',
+    return_city: pickup.city || 'Unknown',
+    return_state: pickup.state || 'Unknown',
+    return_country: pickup.country || 'India',
+    return_pin: String(pickup.zip_code || pickup.zipCode || '').trim(),
+  };
+  try {
+    const res = await axios.post(
+      `${base}/api/backend/clientwarehouse/create/`,
+      payload,
+      {
+        headers: {
+          Authorization: `Token ${token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+      }
+    );
+    return res.data;
+  } catch (e) {
+    const msg =
+      e.response?.data?.error ||
+      e.response?.data?.rmk ||
+      e.response?.data?.message ||
+      e.message ||
+      '';
+    if (String(msg).toLowerCase().includes('already exists')) {
+      return { success: true, alreadyExists: true };
+    }
+    console.warn('Delhivery warehouse create warning:', msg);
+    return { success: false, message: msg };
+  }
+};
+/**
+ * Create order / manifestation on Delhivery.
+ */
+const createDelhiveryOrder = async (order, orderItems, addrObj, selectedCourier = {}) => {
+  const provider = selectedCourier.shipmentProviderId
+    ? await getProviderById(selectedCourier.shipmentProviderId)
+    : await getEnabledDelhiveryProvider();
+  const token = getDelhiveryToken(provider);
+  const env = (provider.credentials?.environment || 'production').toLowerCase();
+  const base = DELHIVERY_BASE[env] || DELHIVERY_BASE.production;
+  const pickup = await getDefaultPickupLocation();
+  if (!pickup) {
+    const err = new Error('No active pickup location configured');
     err.status = 400;
     throw err;
   }
-  const provider = order.shipmentProviderId
-    ? await getProviderById(order.shipmentProviderId)
-    : await getEnabledShiprocketProvider();
+  const addr = buildCompleteAddress(addrObj, order);
+  validateAddressForShiprocket(addr);
+  await ensureDelhiveryWarehouse(provider, pickup, addr);
+  const packageDims = computePackageFromItems(orderItems);
+  const weightGrams = Math.max(1, Math.round(packageDims.weight * 1000));
+  const paymentMode = order.paymentStatus === 'cod' ? 'COD' : 'Prepaid';
+  const codAmount =
+    paymentMode === 'COD'
+      ? parseFloat(order.total) || 0
+      : 0;
+  const productName =
+    (orderItems && orderItems[0] && (orderItems[0].product?.name || 'Product')) ||
+    'Product';
+  const quantity = (orderItems || []).reduce(
+    (sum, it) => sum + (parseInt(it.quantity, 10) || 1),
+    0
+  ) || 1;
+  let shippingMode = 'Surface';
+  const cid = String(selectedCourier.courierCompanyId || selectedCourier.rawCourierId || '');
+  if (
+    cid === 'delhivery-E' ||
+    cid === 'E' ||
+    /express/i.test(selectedCourier.courierName || '') ||
+    selectedCourier.shippingMode === 'Express'
+  ) {
+    shippingMode = 'Express';
+  }
+  const clientName =
+    provider.credentials?.client_name ||
+    provider.name ||
+    'STORE';
+  const orderPayload = {
+    shipments: [
+      {
+        name: String(addr.fullName || 'Customer').trim(),
+        add: [addr.streetAddress, addr.apartment].filter(Boolean).join(', '),
+        city: String(addr.city || '').trim(),
+        state: String(addr.state || 'Unknown').trim(),
+        country: String(addr.country || 'India').trim(),
+        pin: String(addr.zipCode || '').trim(),
+        phone: String(addr.phone || '9999999999').trim(),
+        order: String(order.merchantOrderId || `ORD-${order.id}`),
+        payment_mode: paymentMode,
+        weight: String(weightGrams),
+        total_amount: String(parseFloat(order.total) || 0),
+        cod_amount: String(codAmount),
+        quantity: String(quantity),
+        products_desc: productName,
+        order_date: new Date().toISOString().slice(0, 19).replace('T', ' '),
+        shipping_mode: shippingMode,
+        client: clientName,
+      },
+    ],
+    pickup_location: {
+      name: pickup.name || 'Primary',
+    },
+  };
+  try {
+    const res = await axios.post(
+      `${base}/api/cmu/create.json`,
+      new URLSearchParams({
+        format: 'json',
+        data: JSON.stringify(orderPayload),
+      }).toString(),
+      {
+        headers: {
+          Authorization: `Token ${token}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Accept: 'application/json',
+        },
+      }
+    );
+    const data = res.data || {};
+    const pkg0 = (data.packages && data.packages[0]) || {};
+    const waybill = pkg0.waybill || null;
+    const status = pkg0.status || data.status || null;
+    const success = data.success === true || (!!waybill && status !== 'Fail');
+    if (!success || !waybill) {
+      const remarks =
+        (pkg0.remarks && (Array.isArray(pkg0.remarks) ? pkg0.remarks.join(', ') : pkg0.remarks)) ||
+        data.rmk ||
+        data.message ||
+        'Delhivery order creation failed';
+      return {
+        error: remarks,
+        shiprocketOrderId: null,
+        shiprocketShipmentId: null,
+        awbCode: null,
+        status: 'Fail',
+        raw: data,
+        providerId: provider.id,
+        providerKey: 'delhivery',
+      };
+    }
+    try {
+      const pickupDate = new Date();
+      pickupDate.setDate(pickupDate.getDate() + 1);
+      const pickupPayload = {
+        pickup_date: pickupDate.toISOString().slice(0, 10),
+        pickup_time: '10:00:00',
+        pickup_location: pickup.name || 'Primary',
+        expected_package_count: 1,
+      };
+      await axios.post(`${base}/fm/request/new/`, pickupPayload, {
+        headers: {
+          Authorization: `Token ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+    } catch (pickupErr) {
+      console.warn('Delhivery pickup request warning:', pickupErr.message);
+    }
+    return {
+      shiprocketOrderId: null,
+      shiprocketShipmentId: null,
+      awbCode: String(waybill),
+      status: status || 'created',
+      raw: data,
+      providerId: provider.id,
+      providerKey: 'delhivery',
+    };
+  } catch (e) {
+    const apiMsg =
+      e.response?.data?.message ||
+      e.response?.data?.rmk ||
+      (typeof e.response?.data === 'object'
+        ? JSON.stringify(e.response.data)
+        : null) ||
+      e.message ||
+      'Failed to create Delhivery order';
+    return {
+      error: apiMsg,
+      shiprocketOrderId: null,
+      shiprocketShipmentId: null,
+      awbCode: null,
+      status: 'Fail',
+      raw: e.response?.data || { message: apiMsg },
+      providerId: provider.id,
+      providerKey: 'delhivery',
+    };
+  }
+};
+/**
+ * Generic create shipment – dispatches to the correct provider implementation.
+ */
+const createShipmentOrder = async (order, orderItems, addrObj, selectedCourier = {}) => {
+  let providerKey = null;
+  if (selectedCourier.shipmentProviderId) {
+    try {
+      const p = await getProviderById(selectedCourier.shipmentProviderId);
+      providerKey = (p.provider_key || '').toLowerCase();
+    } catch (_) {}
+  }
+  if (!providerKey && selectedCourier.courierCompanyId) {
+    const cid = String(selectedCourier.courierCompanyId);
+    if (cid.startsWith('delhivery-') || cid === 'S' || cid === 'E') {
+      providerKey = 'delhivery';
+    } else {
+      providerKey = 'shiprocket';
+    }
+  }
+  if (!providerKey) {
+    try {
+      await getEnabledShiprocketProvider();
+      providerKey = 'shiprocket';
+    } catch (_) {
+      try {
+        await getEnabledDelhiveryProvider();
+        providerKey = 'delhivery';
+      } catch (__) {
+        const err = new Error('No enabled shipment provider available');
+        err.status = 400;
+        throw err;
+      }
+    }
+  }
+  if (providerKey === 'delhivery') {
+    return createDelhiveryOrder(order, orderItems, addrObj, selectedCourier);
+  }
+  return createShiprocketOrder(order, orderItems, addrObj, selectedCourier);
+};
+const trackShipment = async (order) => {
+  if (!order.awbCode && !order.shiprocketShipmentId && !order.shiprocketOrderId) {
+    const err = new Error('No AWB / shipment ID available to track');
+    err.status = 400;
+    throw err;
+  }
+  let provider = null;
+  if (order.shipmentProviderId) {
+    try {
+      provider = await getProviderById(order.shipmentProviderId);
+    } catch (_) {}
+  }
+  const key = (provider?.provider_key || '').toLowerCase();
+  if (key === 'delhivery' || (!key && order.awbCode && !order.shiprocketOrderId)) {
+    const token = getDelhiveryToken(provider || (await getEnabledDelhiveryProvider()));
+    const env = ((provider || {}).credentials?.environment || 'production').toLowerCase();
+    const base = DELHIVERY_BASE[env] || DELHIVERY_BASE.production;
+    try {
+      const res = await axios.get(`${base}/api/v1/packages/json/`, {
+        headers: { Accept: 'application/json' },
+        params: {
+          token,
+          waybill: order.awbCode,
+        },
+      });
+      return {
+        status: res.data?.status || null,
+        awbCode: order.awbCode,
+        raw: res.data,
+        providerKey: 'delhivery',
+      };
+    } catch (e) {
+      const msg =
+        e.response?.data?.message || e.message || 'Failed to track Delhivery shipment';
+      const err = new Error(msg);
+      err.status = e.response?.status || 502;
+      throw err;
+    }
+  }
+  // Default: Shiprocket
+  provider = provider || (await getEnabledShiprocketProvider());
   const token = await getShiprocketToken(provider);
   const env = (provider.credentials?.environment || 'production').toLowerCase();
   const base = SHIPROCKET_BASE[env] || SHIPROCKET_BASE.production;
   try {
-    let res;
     if (order.awbCode) {
-      res = await axios.get(`${base}/courier/track/awb/${order.awbCode}`, {
+      const res = await axios.get(`${base}/courier/track/awb/${order.awbCode}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-    } else {
-      res = await axios.get(
-        `${base}/courier/track/shipment/${order.shiprocketShipmentId}`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
+      const data = res.data?.tracking_data || res.data?.data || res.data || {};
+      return {
+        status: data.track_status || data.status || null,
+        awbCode: order.awbCode,
+        raw: data,
+        providerKey: 'shiprocket',
+      };
     }
-    const data = res.data?.tracking_data || res.data?.data || res.data || {};
-    const trackStatus =
-      data.track_status ||
-      data.shipment_status ||
-      data.current_status ||
-      data.status ||
-      null;
-    const activities =
-      data.shipment_track || data.track_activities || data.activities || [];
-    return {
-      status: trackStatus,
-      awbCode: order.awbCode || data.awb_code || null,
-      activities,
-      raw: data,
-    };
+    if (order.shiprocketShipmentId) {
+      const res = await axios.get(
+        `${base}/courier/track/shipment/${order.shiprocketShipmentId}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = res.data?.tracking_data || res.data?.data || res.data || {};
+      return {
+        status: data.track_status || data.status || null,
+        awbCode: data.awb_code || order.awbCode,
+        raw: data,
+        providerKey: 'shiprocket',
+      };
+    }
+    const err = new Error('No trackable identifier');
+    err.status = 400;
+    throw err;
   } catch (e) {
     const msg =
       e.response?.data?.message || e.message || 'Failed to track shipment';
@@ -626,7 +1084,6 @@ const trackShipment = async (order) => {
     throw err;
   }
 };
-
 const cancelShipment = async (order) => {
   if (!order.shiprocketOrderId && !order.awbCode) {
     const err = new Error('No Shiprocket order/AWB to cancel');
@@ -636,6 +1093,15 @@ const cancelShipment = async (order) => {
   const provider = order.shipmentProviderId
     ? await getProviderById(order.shipmentProviderId)
     : await getEnabledShiprocketProvider();
+  const key = (provider.provider_key || '').toLowerCase();
+  if (key === 'delhivery') {
+    return {
+      success: false,
+      message:
+        'Delhivery shipment cancellation must be done from the Delhivery dashboard or support.',
+      raw: null,
+    };
+  }
   const token = await getShiprocketToken(provider);
   const env = (provider.credentials?.environment || 'production').toLowerCase();
   const base = SHIPROCKET_BASE[env] || SHIPROCKET_BASE.production;
@@ -664,7 +1130,6 @@ const cancelShipment = async (order) => {
     throw err;
   }
 };
-
 const getEnabledShipmentProviders = async () => {
   const providers = await Provider.findAll({
     where: {
@@ -680,13 +1145,15 @@ const getEnabledShipmentProviders = async () => {
     is_enabled: p.is_enabled,
   }));
 };
-
 module.exports = {
   getShippingRates,
   createShiprocketOrder,
+  createDelhiveryOrder,
+  createShipmentOrder,
   trackShipment,
   cancelShipment,
   getEnabledShiprocketProvider,
+  getEnabledDelhiveryProvider,
   getEnabledShipmentProviders,
   getDefaultPickupLocation,
   getShiprocketToken,

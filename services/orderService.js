@@ -199,6 +199,7 @@ class OrderService {
         await cartService.clearCart(userId);
       }
       await transaction.commit();
+      // After order is created, if shipment provider is specified, create shipment
       if (shipmentOptions.courierCompanyId || shipmentOptions.courierName) {
         try {
           const fullOrder = await Order.findByPk(order.id, {
@@ -221,7 +222,7 @@ class OrderService {
           const addrObj =
             shipmentOptions.shippingAddressObj ||
             shipmentService.parseShippingAddressText(shippingAddress);
-          const srResult = await shipmentService.createShiprocketOrder(
+          const srResult = await shipmentService.createShipmentOrder(
             fullOrder,
             fullOrder.items,
             addrObj,
@@ -229,24 +230,52 @@ class OrderService {
               courierCompanyId: shipmentOptions.courierCompanyId,
               courierName: shipmentOptions.courierName,
               shipmentProviderId: shipmentOptions.shipmentProviderId,
+              shippingMode: shipmentOptions.shippingMode,
+              rawCourierId: shipmentOptions.rawCourierId,
             }
           );
+          // Build tracking URL based on provider
+          let trackingUrl = null;
+          if (srResult.providerKey === 'delhivery' && srResult.awbCode) {
+            trackingUrl = `https://www.delhivery.com/track/package/${srResult.awbCode}`;
+          } else if (srResult.awbCode) {
+            trackingUrl = `https://shiprocket.co/tracking/${srResult.awbCode}`;
+          }
+          const detailsKey = srResult.providerKey || 'shiprocket';
           await fullOrder.update({
             shiprocketOrderId: srResult.shiprocketOrderId,
             shiprocketShipmentId: srResult.shiprocketShipmentId,
             awbCode: srResult.awbCode,
-            shipmentStatus: srResult.status || 'created',
-            shipmentProviderId: srResult.providerId || fullOrder.shipmentProviderId,
+            shipmentStatus: srResult.error
+              ? 'failed'
+              : srResult.status || 'created',
+            shipmentProviderId:
+              srResult.providerId || fullOrder.shipmentProviderId,
+            trackingUrl: trackingUrl || fullOrder.trackingUrl,
             shipmentDetails: {
               ...(fullOrder.shipmentDetails || {}),
-              shiprocket: srResult.raw || srResult,
+              [detailsKey]: srResult.raw || srResult,
+              error: srResult.error || null,
+              createdAt: new Date().toISOString(),
             },
           });
         } catch (srErr) {
           console.error(
-            'Shiprocket order creation failed (order still placed):',
+            'Shipment order creation failed (order still placed):',
             srErr.message
           );
+          try {
+            await Order.update(
+              {
+                shipmentStatus: 'failed',
+                shipmentDetails: {
+                  error: srErr.message,
+                  failedAt: new Date().toISOString(),
+                },
+              },
+              { where: { id: order.id } }
+            );
+          } catch (_) {}
         }
       }
       if (provider && provider.provider_key === 'phonepe') {
@@ -514,7 +543,13 @@ class OrderService {
     if (trackingUrl && String(trackingUrl).trim()) {
       updates.trackingUrl = String(trackingUrl).trim();
     } else if (order.awbCode) {
-      updates.trackingUrl = `https://shiprocket.co/tracking/${order.awbCode}`;
+      // Default tracking URL based on provider (if known)
+      const providerKey = order.shipmentDetails?.providerKey || '';
+      if (providerKey === 'delhivery') {
+        updates.trackingUrl = `https://www.delhivery.com/track/package/${order.awbCode}`;
+      } else {
+        updates.trackingUrl = `https://shiprocket.co/tracking/${order.awbCode}`;
+      }
     }
     await order.update(updates);
     return order;
@@ -592,10 +627,6 @@ class OrderService {
     });
     return await this.getOrderAdmin(orderId);
   }
-  /**
-   * Create a new shipment for an existing order (admin).
-   * Parses shippingAddress text, enriches from user, validates, then calls Shiprocket.
-   */
   async createShipmentAdmin(orderId, options = {}) {
     const order = await this.getOrderAdmin(orderId);
     if (order.status === 'cancelled') {
@@ -608,7 +639,6 @@ class OrderService {
       err.status = 400;
       throw err;
     }
-    // Build address from explicit obj or parse free-text on order
     let addrObj = options.shippingAddressObj || null;
     if (!addrObj || !addrObj.zipCode) {
       const parsed = shipmentService.parseShippingAddressText(
@@ -617,15 +647,12 @@ class OrderService {
       addrObj = { ...parsed, ...(addrObj || {}) };
     }
     addrObj = shipmentService.buildCompleteAddress(addrObj, order);
-    // Early validation so we return 400 instead of Shiprocket 502
     try {
       shipmentService.validateAddressForShiprocket(addrObj);
     } catch (valErr) {
       throw valErr;
     }
-    if (options.courierCompanyId) {
-      // use provided
-    } else if (addrObj.zipCode) {
+    if (!options.courierCompanyId && addrObj.zipCode) {
       try {
         const ratesResult = await shipmentService.getShippingRates({
           deliveryPincode: addrObj.zipCode,
@@ -640,27 +667,50 @@ class OrderService {
           options.shippingAmount = best.rate;
           options.estimatedDeliveryDays = best.estimatedDays;
           options.shipmentProviderId =
-            options.shipmentProviderId || ratesResult.providerId;
+            options.shipmentProviderId || best.providerId;
+          options.shippingMode = best.shippingMode;
+          options.rawCourierId = best.rawCourierId;
         }
       } catch (rateErr) {
         console.error('Auto rate fetch failed:', rateErr.message);
       }
     }
-    const srResult = await shipmentService.createShiprocketOrder(
+    if (!options.shipmentProviderId) {
+      const providers = await shipmentService.getEnabledShipmentProviders();
+      if (providers.length > 0) {
+        options.shipmentProviderId = providers[0].id;
+      }
+    }
+    if (!options.shipmentProviderId) {
+      const err = new Error('No shipment provider available');
+      err.status = 400;
+      throw err;
+    }
+    const selectedCourier = {
+      courierCompanyId: options.courierCompanyId,
+      courierName: options.courierName,
+      shipmentProviderId: options.shipmentProviderId,
+      shippingMode: options.shippingMode,
+      rawCourierId: options.rawCourierId,
+    };
+    const srResult = await shipmentService.createShipmentOrder(
       order,
       order.items,
       addrObj,
-      {
-        courierCompanyId: options.courierCompanyId,
-        courierName: options.courierName,
-        shipmentProviderId: options.shipmentProviderId,
-      }
+      selectedCourier
     );
-    if (srResult.error && !srResult.shiprocketOrderId) {
+    if (srResult.error && !srResult.awbCode && !srResult.shiprocketOrderId) {
       const err = new Error(srResult.error || 'Failed to create shipment');
       err.status = 502;
       throw err;
     }
+    let trackingUrl = null;
+    if (srResult.providerKey === 'delhivery' && srResult.awbCode) {
+      trackingUrl = `https://www.delhivery.com/track/package/${srResult.awbCode}`;
+    } else if (srResult.awbCode) {
+      trackingUrl = `https://shiprocket.co/tracking/${srResult.awbCode}`;
+    }
+    const detailsKey = srResult.providerKey || 'shiprocket';
     await order.update({
       shiprocketOrderId: srResult.shiprocketOrderId,
       shiprocketShipmentId: srResult.shiprocketShipmentId,
@@ -679,12 +729,11 @@ class OrderService {
         options.estimatedDeliveryDays != null
           ? options.estimatedDeliveryDays
           : order.estimatedDeliveryDays,
-      trackingUrl: srResult.awbCode
-        ? `https://shiprocket.co/tracking/${srResult.awbCode}`
-        : order.trackingUrl,
+      trackingUrl: trackingUrl || order.trackingUrl,
       shipmentDetails: {
         ...(order.shipmentDetails || {}),
-        shiprocket: srResult.raw || srResult,
+        [detailsKey]: srResult.raw || srResult,
+        error: srResult.error || null,
         createdAt: new Date().toISOString(),
       },
     });
