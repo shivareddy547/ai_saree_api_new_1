@@ -1,257 +1,220 @@
-const { Product, ProductVariant, ProductImage, Category, sequelize } = require('../models');
-const { Op } = require('sequelize');
-class StoreService {
-  async getProducts(filters = {}) {
-    const where = {};
-    if (filters.featured) {
-      where.showInFeaturedProducts = true;
-    }
-    if (filters.newArrivals) {
-      where.showInNewArrivals = true;
-    }
-    if (filters.bestSellers) {
-      where.showInBestSellers = true;
-    }
-    if (filters.premiumProducts) {
-      where.showInPremiumProducts = true;
-    }
-    if (filters.categoryId) {
-      where.categoryId = parseInt(filters.categoryId, 10);
-    }
-    if (filters.subcategoryId) {
-      where.subcategoryId = parseInt(filters.subcategoryId, 10);
-    }
-    // Search by product name or SKU
-    if (filters.search) {
-      const search = filters.search.trim();
-      if (search) {
-        const productIdsByName = await Product.findAll({
-          attributes: ['id'],
-          where: {
-            name: { [Op.iLike]: `%${search}%` }
-          },
-          raw: true
-        });
-        const idsByName = productIdsByName.map(p => p.id);
-        const productIdsByDefaultSku = await Product.findAll({
-          attributes: ['id'],
-          where: {
-            defaultSku: { [Op.iLike]: `%${search}%` }
-          },
-          raw: true
-        });
-        const idsByDefaultSku = productIdsByDefaultSku.map(p => p.id);
-        const productIdsByVariantSku = await Product.findAll({
-          attributes: ['id'],
-          include: [{
-            model: ProductVariant,
-            as: 'variants',
-            where: {
-              sku: { [Op.iLike]: `%${search}%` }
-            },
-            required: true
-          }],
-          raw: true
-        });
-        const idsByVariantSku = productIdsByVariantSku.map(p => p.id);
-        const allIds = [...new Set([...idsByName, ...idsByDefaultSku, ...idsByVariantSku])];
-        if (allIds.length === 0) {
-          return [];
-        }
-        where.id = { [Op.in]: allIds };
-      }
-    }
-    // Sorting
-    let order = [['createdAt', 'DESC']];
-    const sortBy = filters.sortBy || 'newest';
-    switch (sortBy) {
-      case 'price_asc':
-        order = [['basePrice', 'ASC']];
-        break;
-      case 'price_desc':
-        order = [['basePrice', 'DESC']];
-        break;
-      case 'name_asc':
-        order = [['name', 'ASC']];
-        break;
-      case 'name_desc':
-        order = [['name', 'DESC']];
-        break;
-      case 'oldest':
-        order = [['createdAt', 'ASC']];
-        break;
-      case 'newest':
-      default:
-        order = [['createdAt', 'DESC']];
-        break;
-    }
-    // Fetch products (price filtering is done after, because real price often lives on variants)
-    const products = await Product.findAll({
-      where,
-      include: [
-        {
-          model: ProductVariant,
-          as: 'variants',
-        },
-        {
-          model: ProductImage,
-          as: 'images',
-          limit: 1,
-        },
-        {
-          model: Category,
-          as: 'category',
-        },
-        {
-          model: Category,
-          as: 'subcategory',
-        },
-      ],
-      order,
-    });
-    // ---------- Price filtering (works with both basePrice and variant prices) ----------
-    const minPrice = filters.minPrice !== undefined && filters.minPrice !== ''
-      ? parseFloat(filters.minPrice)
-      : null;
-    const maxPrice = filters.maxPrice !== undefined && filters.maxPrice !== ''
-      ? parseFloat(filters.maxPrice)
-      : null;
-    let filtered = products;
-    if (
-      (minPrice !== null && !isNaN(minPrice)) ||
-      (maxPrice !== null && !isNaN(maxPrice))
-    ) {
-      filtered = products.filter((p) => {
-        // Calculate effective price:
-        // Prefer the lowest positive variant price, otherwise fall back to basePrice
-        let effectivePrice = null;
-        if (p.variants && p.variants.length > 0) {
-          const variantPrices = p.variants
-            .map((v) => parseFloat(v.price))
-            .filter((pr) => !isNaN(pr) && pr > 0);
-          if (variantPrices.length > 0) {
-            effectivePrice = Math.min(...variantPrices);
-          }
-        }
-        if (effectivePrice === null) {
-          const base = p.basePrice ? parseFloat(p.basePrice) : null;
-          if (base !== null && !isNaN(base) && base > 0) {
-            effectivePrice = base;
-          }
-        }
-        // If we still have no valid price, exclude the product when a price filter is active
-        if (effectivePrice === null || isNaN(effectivePrice)) {
-          return false;
-        }
-        if (minPrice !== null && !isNaN(minPrice) && effectivePrice < minPrice) {
-          return false;
-        }
-        if (maxPrice !== null && !isNaN(maxPrice) && effectivePrice > maxPrice) {
-          return false;
-        }
-        return true;
-      });
-    }
-    // When sorting by price, re-sort using the effective price
-    if (sortBy === 'price_asc' || sortBy === 'price_desc') {
-      filtered = filtered.slice().sort((a, b) => {
-        const getEffective = (p) => {
-          if (p.variants && p.variants.length > 0) {
-            const prices = p.variants
-              .map((v) => parseFloat(v.price))
-              .filter((pr) => !isNaN(pr) && pr > 0);
-            if (prices.length > 0) return Math.min(...prices);
-          }
-          return p.basePrice ? parseFloat(p.basePrice) || 0 : 0;
-        };
-        const priceA = getEffective(a);
-        const priceB = getEffective(b);
-        return sortBy === 'price_asc' ? priceA - priceB : priceB - priceA;
-      });
-    }
-    return filtered;
+const { Product, ProductVariant, ProductImage, Category, Op } = require('../models');
+const { Sequelize } = require('sequelize');
+/**
+ * Public store product listing – only ACTIVE (isActive = true) products.
+ * Soft-deleted products (isActive = false) are never returned.
+ */
+const getStoreProducts = async (filters = {}) => {
+  const {
+    search,
+    categoryId,
+    subcategoryId,
+    featured,
+    bestSellers,
+    newArrivals,
+    premium,
+    page = 1,
+    limit = 20,
+    sort = 'newest',
+  } = filters;
+  const where = {
+    isActive: true, // CRITICAL: only non-deleted + active products
+  };
+  if (search && search.trim()) {
+    where[Op.or] = [
+      { name: { [Op.iLike]: `%${search.trim()}%` } },
+      { description: { [Op.iLike]: `%${search.trim()}%` } },
+      { defaultSku: { [Op.iLike]: `%${search.trim()}%` } },
+    ];
   }
-  async getProductById(id) {
-    const product = await Product.findByPk(id, {
-      include: [
-        {
-          model: ProductVariant,
-          as: 'variants',
-        },
-        {
-          model: ProductImage,
-          as: 'images',
-          order: [['position', 'ASC']],
-        },
-        {
-          model: Category,
-          as: 'category',
-        },
-        {
-          model: Category,
-          as: 'subcategory',
-        },
-      ],
-    });
-    return product;
+  if (categoryId) {
+    where.categoryId = categoryId;
   }
-  async autocomplete(query, limit = 10) {
-    if (!query || query.trim().length === 0) {
-      return [];
-    }
-    const search = query.trim();
-    const productIdsByName = await Product.findAll({
-      attributes: ['id'],
-      where: {
-        name: { [Op.iLike]: `%${search}%` }
-      },
-      raw: true
-    });
-    const idsByName = productIdsByName.map(p => p.id);
-    const productIdsByDefaultSku = await Product.findAll({
-      attributes: ['id'],
-      where: {
-        defaultSku: { [Op.iLike]: `%${search}%` }
-      },
-      raw: true
-    });
-    const idsByDefaultSku = productIdsByDefaultSku.map(p => p.id);
-    const productIdsByVariantSku = await Product.findAll({
-      attributes: ['id'],
-      include: [{
+  if (subcategoryId) {
+    where.subcategoryId = subcategoryId;
+  }
+  if (featured === 'true' || featured === true) {
+    where.showInFeaturedProducts = true;
+  }
+  if (bestSellers === 'true' || bestSellers === true) {
+    where.showInBestSellers = true;
+  }
+  if (newArrivals === 'true' || newArrivals === true) {
+    where.showInNewArrivals = true;
+  }
+  if (premium === 'true' || premium === true) {
+    where.showInPremiumProducts = true;
+  }
+  let order = [['createdAt', 'DESC']];
+  if (sort === 'price_asc') order = [['basePrice', 'ASC']];
+  else if (sort === 'price_desc') order = [['basePrice', 'DESC']];
+  else if (sort === 'name') order = [['name', 'ASC']];
+  else if (sort === 'popular') order = [['views', 'DESC']];
+  const offset = (Math.max(1, parseInt(page, 10)) - 1) * Math.min(50, parseInt(limit, 10) || 20);
+  const lim = Math.min(50, parseInt(limit, 10) || 20);
+  const { rows, count } = await Product.findAndCountAll({
+    where,
+    include: [
+      {
         model: ProductVariant,
         as: 'variants',
-        where: {
-          sku: { [Op.iLike]: `%${search}%` }
-        },
-        required: true
-      }],
-      raw: true
-    });
-    const idsByVariantSku = productIdsByVariantSku.map(p => p.id);
-    const allIds = [...new Set([...idsByName, ...idsByDefaultSku, ...idsByVariantSku])];
-    if (allIds.length === 0) {
-      return [];
-    }
-    const products = await Product.findAll({
-      attributes: ['id', 'name'],
-      where: { id: { [Op.in]: allIds } },
-      include: [
-        {
-          model: ProductImage,
-          as: 'images',
-          limit: 1,
-          attributes: ['url']
-        }
-      ],
-      limit: limit,
-      order: [['name', 'ASC']]
-    });
-    return products.map(p => ({
-      id: p.id,
-      name: p.name,
-      image: p.images && p.images.length > 0 ? p.images[0].url : null
-    }));
+        required: false,
+      },
+      {
+        model: ProductImage,
+        as: 'images',
+        required: false,
+      },
+      {
+        model: Category,
+        as: 'category',
+        required: false,
+      },
+      {
+        model: Category,
+        as: 'subcategory',
+        required: false,
+      },
+    ],
+    order,
+    limit: lim,
+    offset,
+    distinct: true,
+  });
+  return {
+    products: rows,
+    pagination: {
+      page: parseInt(page, 10) || 1,
+      limit: lim,
+      total: count,
+      totalPages: Math.ceil(count / lim),
+    },
+  };
+};
+/**
+ * Get a single product for the storefront.
+ * Only returns if the product is active (isActive = true).
+ */
+const getStoreProductById = async (id) => {
+  const product = await Product.findOne({
+    where: {
+      id,
+      isActive: true, // CRITICAL: never return soft-deleted products
+    },
+    include: [
+      {
+        model: ProductVariant,
+        as: 'variants',
+        required: false,
+      },
+      {
+        model: ProductImage,
+        as: 'images',
+        required: false,
+      },
+      {
+        model: Category,
+        as: 'category',
+        required: false,
+      },
+      {
+        model: Category,
+        as: 'subcategory',
+        required: false,
+      },
+    ],
+  });
+  return product;
+};
+/**
+ * Autocomplete suggestions used by StoreLayout search.
+ * Only returns active products.
+ */
+const getAutocompleteSuggestions = async (query, limit = 8) => {
+  if (!query || query.trim().length < 2) {
+    return [];
   }
-}
-module.exports = new StoreService();
+  const products = await Product.findAll({
+    where: {
+      isActive: true, // CRITICAL: only active products
+      [Op.or]: [
+        { name: { [Op.iLike]: `%${query.trim()}%` } },
+        { defaultSku: { [Op.iLike]: `%${query.trim()}%` } },
+      ],
+    },
+    attributes: ['id', 'name'],
+    include: [
+      {
+        model: ProductImage,
+        as: 'images',
+        attributes: ['url'],
+        required: false,
+        limit: 1,
+      },
+    ],
+    limit: Math.min(15, parseInt(limit, 10) || 8),
+    order: [['name', 'ASC']],
+  });
+  return products.map((p) => ({
+    id: p.id,
+    name: p.name,
+    image: p.images && p.images.length > 0 ? p.images[0].url : null,
+  }));
+};
+/**
+ * Featured / Best Sellers / New Arrivals / Premium sections for Store Home.
+ * All filtered by isActive = true.
+ */
+const getHomeSections = async () => {
+  const baseWhere = { isActive: true };
+  const [featured, bestSellers, newArrivals, premium] = await Promise.all([
+    Product.findAll({
+      where: { ...baseWhere, showInFeaturedProducts: true },
+      include: [
+        { model: ProductImage, as: 'images', required: false },
+        { model: ProductVariant, as: 'variants', required: false },
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: 12,
+    }),
+    Product.findAll({
+      where: { ...baseWhere, showInBestSellers: true },
+      include: [
+        { model: ProductImage, as: 'images', required: false },
+        { model: ProductVariant, as: 'variants', required: false },
+      ],
+      order: [['views', 'DESC']],
+      limit: 12,
+    }),
+    Product.findAll({
+      where: { ...baseWhere, showInNewArrivals: true },
+      include: [
+        { model: ProductImage, as: 'images', required: false },
+        { model: ProductVariant, as: 'variants', required: false },
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: 12,
+    }),
+    Product.findAll({
+      where: { ...baseWhere, showInPremiumProducts: true },
+      include: [
+        { model: ProductImage, as: 'images', required: false },
+        { model: ProductVariant, as: 'variants', required: false },
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: 12,
+    }),
+  ]);
+  return {
+    featured,
+    bestSellers,
+    newArrivals,
+    premium,
+  };
+};
+module.exports = {
+  getStoreProducts,
+  getStoreProductById,
+  getAutocompleteSuggestions,
+  getHomeSections,
+};
