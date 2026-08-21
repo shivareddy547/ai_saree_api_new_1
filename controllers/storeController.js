@@ -1,4 +1,6 @@
 const storeService = require('../services/storeService');
+const jwt = require('jsonwebtoken');
+const JWT_SECRET = process.env.JWT_SECRET || 'default-dev-secret';
 const getProducts = async (req, res, next) => {
   try {
     const result = await storeService.getStoreProducts(req.query);
@@ -51,9 +53,50 @@ const getHomeSections = async (req, res, next) => {
     next(error);
   }
 };
+/**
+ * POST /api/store/track-page-view
+ * Body: { path: string, provider?: string }
+ * Auth is optional – presence of a valid Bearer token means the viewer is logged in.
+ */
+const trackPageView = async (req, res, next) => {
+  try {
+    const { path, provider } = req.body || {};
+    if (!path) {
+      return res.status(400).json({
+        success: false,
+        message: 'path is required',
+      });
+    }
+    // Determine if the request is from a logged-in user (optional auth)
+    let isGuest = true;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.slice(7);
+        jwt.verify(token, JWT_SECRET);
+        isGuest = false;
+      } catch (e) {
+        // Invalid / expired token → treat as guest
+        isGuest = true;
+      }
+    }
+    const data = await storeService.trackPageView({
+      path,
+      isGuest,
+      provider: provider || null,
+    });
+    res.json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 module.exports = {
   getProducts,
   getProductById,
   autocomplete,
   getHomeSections,
+  trackPageView,
 };

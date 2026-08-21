@@ -8,6 +8,8 @@ router.get('/products', storeController.getProducts);
 router.get('/products/:id', storeController.getProductById);
 router.get('/autocomplete', storeController.autocomplete);
 router.get('/home-sections', storeController.getHomeSections);
+// Page-view tracking (public, optional auth checked inside controller)
+router.post('/track-page-view', storeController.trackPageView);
 // Wishlist endpoints (authenticated)
 router.get('/wishlist', authMiddleware, wishlistController.getWishlist);
 router.get('/wishlist/count', authMiddleware, wishlistController.getWishlistCount);

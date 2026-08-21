@@ -1,4 +1,4 @@
-const { Product, ProductVariant, ProductImage, Category, Op } = require('../models');
+const { Product, ProductVariant, ProductImage, Category, PageView, Op } = require('../models');
 const { Sequelize } = require('sequelize');
 /**
  * Public store product listing – only ACTIVE (isActive = true) products.
@@ -84,23 +84,16 @@ const getStoreProducts = async (filters = {}) => {
   return {
     products: rows,
     pagination: {
-      page: parseInt(page, 10) || 1,
+      page: Math.max(1, parseInt(page, 10)),
       limit: lim,
       total: count,
-      totalPages: Math.ceil(count / lim),
+      totalPages: Math.ceil(count / lim) || 1,
     },
   };
 };
-/**
- * Get a single product for the storefront.
- * Only returns if the product is active (isActive = true).
- */
 const getStoreProductById = async (id) => {
   const product = await Product.findOne({
-    where: {
-      id,
-      isActive: true, // CRITICAL: never return soft-deleted products
-    },
+    where: { id, isActive: true },
     include: [
       {
         model: ProductVariant,
@@ -126,45 +119,26 @@ const getStoreProductById = async (id) => {
   });
   return product;
 };
-/**
- * Autocomplete suggestions used by StoreLayout search.
- * Only returns active products.
- */
-const getAutocompleteSuggestions = async (query, limit = 8) => {
-  if (!query || query.trim().length < 2) {
-    return [];
-  }
+const getAutocompleteSuggestions = async (q) => {
+  if (!q || !q.trim()) return [];
   const products = await Product.findAll({
     where: {
-      isActive: true, // CRITICAL: only active products
+      isActive: true,
       [Op.or]: [
-        { name: { [Op.iLike]: `%${query.trim()}%` } },
-        { defaultSku: { [Op.iLike]: `%${query.trim()}%` } },
+        { name: { [Op.iLike]: `%${q.trim()}%` } },
+        { defaultSku: { [Op.iLike]: `%${q.trim()}%` } },
       ],
     },
-    attributes: ['id', 'name'],
-    include: [
-      {
-        model: ProductImage,
-        as: 'images',
-        attributes: ['url'],
-        required: false,
-        limit: 1,
-      },
-    ],
-    limit: Math.min(15, parseInt(limit, 10) || 8),
+    attributes: ['id', 'name', 'defaultSku'],
+    limit: 10,
     order: [['name', 'ASC']],
   });
   return products.map((p) => ({
     id: p.id,
     name: p.name,
-    image: p.images && p.images.length > 0 ? p.images[0].url : null,
+    sku: p.defaultSku,
   }));
 };
-/**
- * Featured / Best Sellers / New Arrivals / Premium sections for Store Home.
- * All filtered by isActive = true.
- */
 const getHomeSections = async () => {
   const baseWhere = { isActive: true };
   const [featured, bestSellers, newArrivals, premium] = await Promise.all([
@@ -183,7 +157,7 @@ const getHomeSections = async () => {
         { model: ProductImage, as: 'images', required: false },
         { model: ProductVariant, as: 'variants', required: false },
       ],
-      order: [['views', 'DESC']],
+      order: [['createdAt', 'DESC']],
       limit: 12,
     }),
     Product.findAll({
@@ -212,9 +186,57 @@ const getHomeSections = async () => {
     premium,
   };
 };
+/**
+ * Track a page view for any /store/* path.
+ * - Always increments totalViews
+ * - Increments guestViews when the visitor is not logged in
+ * - When a provider query param is present, increments the corresponding key in providerViews
+ */
+const trackPageView = async ({ path, isGuest, provider }) => {
+  if (!path || typeof path !== 'string' || !path.startsWith('/store')) {
+    const err = new Error('Invalid path. Must start with /store');
+    err.status = 400;
+    throw err;
+  }
+  // Normalize path (strip trailing slash, keep query-less path)
+  const normalizedPath = path.split('?')[0].replace(/\/+$/, '') || '/store';
+  let pageView = await PageView.findOne({ where: { path: normalizedPath } });
+  if (!pageView) {
+    pageView = await PageView.create({
+      path: normalizedPath,
+      totalViews: 0,
+      guestViews: 0,
+      providerViews: {},
+    });
+  }
+  // Atomic increments via Sequelize
+  const updates = {
+    totalViews: Sequelize.literal('"totalViews" + 1'),
+  };
+  if (isGuest) {
+    updates.guestViews = Sequelize.literal('"guestViews" + 1');
+  }
+  await pageView.update(updates);
+  // Handle provider counter (JSONB)
+  if (provider && typeof provider === 'string' && provider.trim()) {
+    const key = provider.trim().toLowerCase();
+    const current = pageView.providerViews || {};
+    const next = { ...current, [key]: (current[key] || 0) + 1 };
+    await pageView.update({ providerViews: next });
+  }
+  // Reload to return fresh values
+  await pageView.reload();
+  return {
+    path: pageView.path,
+    totalViews: pageView.totalViews,
+    guestViews: pageView.guestViews,
+    providerViews: pageView.providerViews,
+  };
+};
 module.exports = {
   getStoreProducts,
   getStoreProductById,
   getAutocompleteSuggestions,
   getHomeSections,
+  trackPageView,
 };
