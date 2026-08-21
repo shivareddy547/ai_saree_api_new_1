@@ -19,7 +19,7 @@ const createProduct = async (req, res) => {
 };
 const getProducts = async (req, res) => {
   try {
-    // Only get products belonging to the logged-in user
+    // Only get products belonging to the logged-in user (active only)
     const products = await productService.getProducts(req.user.id);
     res.json({
       success: true,
@@ -114,7 +114,8 @@ const deleteProduct = async (req, res) => {
         error: 'You do not have permission to delete this product',
       });
     }
-    const deleted = await productService.deleteProduct(productId);
+    // Soft delete: set isActive = false
+    const deleted = await productService.softDeleteProduct(productId);
     if (!deleted) {
       return res.status(404).json({
         success: false,
