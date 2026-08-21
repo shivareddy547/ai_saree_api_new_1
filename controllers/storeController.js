@@ -67,7 +67,6 @@ const trackPageView = async (req, res, next) => {
         message: 'path is required',
       });
     }
-    // Determine if the request is from a logged-in user (optional auth)
     let isGuest = true;
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -76,7 +75,6 @@ const trackPageView = async (req, res, next) => {
         jwt.verify(token, JWT_SECRET);
         isGuest = false;
       } catch (e) {
-        // Invalid / expired token → treat as guest
         isGuest = true;
       }
     }
@@ -93,10 +91,27 @@ const trackPageView = async (req, res, next) => {
     next(error);
   }
 };
+/**
+ * GET /api/store/page-views
+ * Returns all tracked pages with guest / registered / provider counts.
+ * Requires authentication (admin panel).
+ */
+const getPageViews = async (req, res, next) => {
+  try {
+    const data = await storeService.getPageViews();
+    res.json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 module.exports = {
   getProducts,
   getProductById,
   autocomplete,
   getHomeSections,
   trackPageView,
+  getPageViews,
 };

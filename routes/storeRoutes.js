@@ -10,6 +10,8 @@ router.get('/autocomplete', storeController.autocomplete);
 router.get('/home-sections', storeController.getHomeSections);
 // Page-view tracking (public, optional auth checked inside controller)
 router.post('/track-page-view', storeController.trackPageView);
+// Page-view analytics (admin – requires auth)
+router.get('/page-views', authMiddleware, storeController.getPageViews);
 // Wishlist endpoints (authenticated)
 router.get('/wishlist', authMiddleware, wishlistController.getWishlist);
 router.get('/wishlist/count', authMiddleware, wishlistController.getWishlistCount);

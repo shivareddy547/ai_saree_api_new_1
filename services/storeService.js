@@ -18,7 +18,7 @@ const getStoreProducts = async (filters = {}) => {
     sort = 'newest',
   } = filters;
   const where = {
-    isActive: true, // CRITICAL: only non-deleted + active products
+    isActive: true,
   };
   if (search && search.trim()) {
     where[Op.or] = [
@@ -198,7 +198,6 @@ const trackPageView = async ({ path, isGuest, provider }) => {
     err.status = 400;
     throw err;
   }
-  // Normalize path (strip trailing slash, keep query-less path)
   const normalizedPath = path.split('?')[0].replace(/\/+$/, '') || '/store';
   let pageView = await PageView.findOne({ where: { path: normalizedPath } });
   if (!pageView) {
@@ -209,7 +208,6 @@ const trackPageView = async ({ path, isGuest, provider }) => {
       providerViews: {},
     });
   }
-  // Atomic increments via Sequelize
   const updates = {
     totalViews: Sequelize.literal('"totalViews" + 1'),
   };
@@ -217,14 +215,12 @@ const trackPageView = async ({ path, isGuest, provider }) => {
     updates.guestViews = Sequelize.literal('"guestViews" + 1');
   }
   await pageView.update(updates);
-  // Handle provider counter (JSONB)
   if (provider && typeof provider === 'string' && provider.trim()) {
     const key = provider.trim().toLowerCase();
     const current = pageView.providerViews || {};
     const next = { ...current, [key]: (current[key] || 0) + 1 };
     await pageView.update({ providerViews: next });
   }
-  // Reload to return fresh values
   await pageView.reload();
   return {
     path: pageView.path,
@@ -233,10 +229,39 @@ const trackPageView = async ({ path, isGuest, provider }) => {
     providerViews: pageView.providerViews,
   };
 };
+/**
+ * List all tracked page views with derived registered-user count
+ * and a summed provider total for easy UI display.
+ */
+const getPageViews = async () => {
+  const rows = await PageView.findAll({
+    order: [['totalViews', 'DESC']],
+  });
+  return rows.map((row) => {
+    const providerViews = row.providerViews || {};
+    const providerTotal = Object.values(providerViews).reduce(
+      (sum, n) => sum + (Number(n) || 0),
+      0
+    );
+    const registeredViews = Math.max(0, (row.totalViews || 0) - (row.guestViews || 0));
+    return {
+      id: row.id,
+      path: row.path,
+      totalViews: row.totalViews || 0,
+      guestViews: row.guestViews || 0,
+      registeredViews,
+      providerViews,
+      providerTotal,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  });
+};
 module.exports = {
   getStoreProducts,
   getStoreProductById,
   getAutocompleteSuggestions,
   getHomeSections,
   trackPageView,
+  getPageViews,
 };
