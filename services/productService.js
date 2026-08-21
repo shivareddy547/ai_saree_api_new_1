@@ -52,6 +52,8 @@ const createProduct = async (data) => {
     const length = sanitizeNumeric(data.length, 30);
     const breadth = sanitizeNumeric(data.breadth, 25);
     const height = sanitizeNumeric(data.height, 5);
+    // NEW: isActive default true
+    const isActive = data.isActive !== undefined ? data.isActive : true;
     const productData = {
       userId: data.userId,
       name: data.name,
@@ -82,6 +84,7 @@ const createProduct = async (data) => {
       length: length,
       breadth: breadth,
       height: height,
+      isActive: isActive,
     };
     const product = await Product.create(productData, { transaction });
     let variants = data.variants || [];
@@ -224,6 +227,8 @@ const updateProduct = async (id, data) => {
     const length = sanitizeNumeric(data.length, 30);
     const breadth = sanitizeNumeric(data.breadth, 25);
     const height = sanitizeNumeric(data.height, 5);
+    // NEW: isActive - keep existing if not provided
+    const isActive = data.isActive !== undefined ? data.isActive : product.isActive;
     const productData = {
       userId: data.userId,
       name: data.name,
@@ -254,6 +259,7 @@ const updateProduct = async (id, data) => {
       length: length,
       breadth: breadth,
       height: height,
+      isActive: isActive,
     };
     await product.update(productData, { transaction });
     if (data.variants !== undefined) {

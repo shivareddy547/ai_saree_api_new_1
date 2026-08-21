@@ -153,6 +153,12 @@ module.exports = (sequelize) => {
       allowNull: false,
       defaultValue: 5,
     },
+    // NEW: isActive flag
+    isActive: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
+    },
   }, {
     sequelize,
     modelName: 'Product',
