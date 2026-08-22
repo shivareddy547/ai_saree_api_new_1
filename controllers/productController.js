@@ -1,146 +1,64 @@
 const productService = require('../services/productService');
-const createProduct = async (req, res) => {
-  try {
-    const productData = req.body;
-    productData.userId = req.user.id;
-    const product = await productService.createProduct(productData);
-    res.status(201).json({
-      success: true,
-      data: product,
-    });
-  } catch (error) {
-    console.error('Create product error:', error);
-    res.status(400).json({
-      success: false,
-      error: error.message || 'Failed to create product',
-    });
+class ProductController {
+  async getAllProducts(req, res, next) {
+    try {
+      const { search, status, categoryId } = req.query;
+      const filters = {};
+      if (search) filters.search = search;
+      if (status) filters.status = status;
+      if (categoryId) filters.categoryId = categoryId;
+      const products = await productService.getAllProducts(filters);
+      res.status(200).json({
+        success: true,
+        data: products,
+      });
+    } catch (error) {
+      next(error);
+    }
   }
-};
-const getProducts = async (req, res) => {
-  try {
-    const { search, status, categoryId } = req.query;
-    const filters = { userId: req.user.id };
-    if (status === 'deleted') {
-      filters.isActive = false;
-    } else if (status === 'all') {
-      // no isActive filter
-    } else {
-      filters.isActive = true;
+  async getProductById(req, res, next) {
+    try {
+      const { id } = req.params;
+      const product = await productService.getProductById(id);
+      res.status(200).json({
+        success: true,
+        data: product,
+      });
+    } catch (error) {
+      next(error);
     }
-    if (search) {
-      filters.search = search.trim();
-    }
-    if (categoryId) {
-      filters.categoryId = parseInt(categoryId, 10);
-    }
-    const products = await productService.getProducts(req.user.id, filters);
-    res.json({
-      success: true,
-      data: products,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
   }
-};
-const getProduct = async (req, res) => {
-  try {
-    const product = await productService.getProduct(req.params.id);
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        error: 'Product not found',
-      });
+  async deleteProduct(req, res, next) {
+    try {
+      const { id } = req.params;
+      const result = await productService.deleteProduct(id);
+      res.status(200).json(result);
+    } catch (error) {
+      next(error);
     }
-    if (product.userId !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: 'You do not have permission to access this product',
-      });
-    }
-    res.json({
-      success: true,
-      data: product,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
   }
-};
-const updateProduct = async (req, res) => {
-  try {
-    const productId = req.params.id;
-    const existingProduct = await productService.getProduct(productId);
-    if (!existingProduct) {
-      return res.status(404).json({
-        success: false,
-        error: 'Product not found',
-      });
+  async exportProducts(req, res, next) {
+    try {
+      const { search, status, categoryId } = req.query;
+      const filters = {};
+      if (search) filters.search = search;
+      if (status) filters.status = status;
+      if (categoryId) filters.categoryId = categoryId;
+      const buffer = await productService.exportProductsToExcel(filters);
+      const filename = `products_export_${Date.now()}.xls`;
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.ms-excel'
+      );
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${filename}"`
+      );
+      res.setHeader('Content-Length', buffer.length);
+      res.send(buffer);
+    } catch (error) {
+      next(error);
     }
-    if (existingProduct.userId !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: 'You do not have permission to update this product',
-      });
-    }
-    const productData = req.body;
-    productData.userId = req.user.id;
-    const product = await productService.updateProduct(productId, productData);
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        error: 'Product not found',
-      });
-    }
-    res.json({
-      success: true,
-      data: product,
-    });
-  } catch (error) {
-    console.error('Update product error:', error);
-    res.status(400).json({
-      success: false,
-      error: error.message || 'Failed to update product',
-    });
   }
-};
-const deleteProduct = async (req, res) => {
-  try {
-    const productId = req.params.id;
-    const existingProduct = await productService.getProduct(productId);
-    if (!existingProduct) {
-      return res.status(404).json({
-        success: false,
-        error: 'Product not found',
-      });
-    }
-    if (existingProduct.userId !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: 'You do not have permission to delete this product',
-      });
-    }
-    const deleted = await productService.softDeleteProduct(productId);
-    if (!deleted) {
-      return res.status(404).json({
-        success: false,
-        error: 'Product not found',
-      });
-    }
-    res.json({
-      success: true,
-      message: 'Product deleted successfully',
-    });
-  } catch (error) {
-    console.error('Delete product error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to delete product',
-    });
-  }
-};
-module.exports = { createProduct, getProducts, getProduct, updateProduct, deleteProduct };
+}
+module.exports = new ProductController();
