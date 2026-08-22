@@ -44,6 +44,27 @@ const createProvider = async (data) => {
       err.status = 400;
       throw err;
     }
+    // Basic validation for free_shipping config
+    if (data.provider_key === 'free_shipping') {
+      const c = data.credentials;
+      const hasAny =
+        c.use_order_total === 'true' ||
+        c.use_emails === 'true' ||
+        c.use_pincodes === 'true';
+      if (!hasAny) {
+        const err = new Error('Free shipping requires at least one condition (order total, emails, or pincodes)');
+        err.status = 400;
+        throw err;
+      }
+      if (c.use_order_total === 'true') {
+        const min = Number(c.min_order_total);
+        if (isNaN(min) || min < 0) {
+          const err = new Error('min_order_total must be a non-negative number');
+          err.status = 400;
+          throw err;
+        }
+      }
+    }
     const provider = await Provider.create({
       provider_type: data.provider_type,
       name: data.name.trim(),
@@ -83,6 +104,27 @@ const updateProvider = async (id, data) => {
         const err = new Error('Credentials must be a valid object');
         err.status = 400;
         throw err;
+      }
+      // Basic validation for free_shipping config
+      if ((data.provider_key || provider.provider_key) === 'free_shipping') {
+        const c = data.credentials;
+        const hasAny =
+          c.use_order_total === 'true' ||
+          c.use_emails === 'true' ||
+          c.use_pincodes === 'true';
+        if (!hasAny) {
+          const err = new Error('Free shipping requires at least one condition (order total, emails, or pincodes)');
+          err.status = 400;
+          throw err;
+        }
+        if (c.use_order_total === 'true') {
+          const min = Number(c.min_order_total);
+          if (isNaN(min) || min < 0) {
+            const err = new Error('min_order_total must be a non-negative number');
+            err.status = 400;
+            throw err;
+          }
+        }
       }
       provider.credentials = data.credentials;
     }
@@ -133,6 +175,72 @@ const deleteProvider = async (id) => {
     throw err;
   }
 };
+/**
+ * Evaluate whether free shipping should be applied for the given context.
+ * Used by checkout / order flow.
+ * @param {object} context - { orderTotal, customerEmail, pincode }
+ * @returns {Promise<{ eligible: boolean, provider: object|null, reason: string }>}
+ */
+const evaluateFreeShipping = async (context = {}) => {
+  try {
+    const { orderTotal = 0, customerEmail = '', pincode = '' } = context;
+    const freeProviders = await Provider.findAll({
+      where: {
+        provider_type: 'shipment',
+        provider_key: 'free_shipping',
+        is_enabled: true,
+      },
+    });
+    if (!freeProviders || freeProviders.length === 0) {
+      return { eligible: false, provider: null, reason: 'No enabled free shipping provider' };
+    }
+    const normalizeList = (str) =>
+      String(str || '')
+        .split(/[,;\n]+/)
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+    for (const provider of freeProviders) {
+      const c = provider.credentials || {};
+      let matched = false;
+      let reasonParts = [];
+      if (c.use_order_total === 'true') {
+        const min = Number(c.min_order_total) || 0;
+        if (Number(orderTotal) >= min) {
+          matched = true;
+          reasonParts.push(`order total ≥ ₹${min}`);
+        }
+      }
+      if (c.use_emails === 'true') {
+        const emails = normalizeList(c.allowed_emails);
+        const email = String(customerEmail || '').trim().toLowerCase();
+        if (email && emails.includes(email)) {
+          matched = true;
+          reasonParts.push('email match');
+        }
+      }
+      if (c.use_pincodes === 'true') {
+        const pins = normalizeList(c.allowed_pincodes);
+        const pin = String(pincode || '').trim().toLowerCase();
+        if (pin && pins.includes(pin)) {
+          matched = true;
+          reasonParts.push('pincode match');
+        }
+      }
+      if (matched) {
+        return {
+          eligible: true,
+          provider,
+          reason: reasonParts.join(', ') || 'condition matched',
+        };
+      }
+    }
+    return { eligible: false, provider: null, reason: 'No free shipping conditions matched' };
+  } catch (error) {
+    const err = new Error('Failed to evaluate free shipping');
+    err.status = 500;
+    throw err;
+  }
+};
 module.exports = {
   getAllProviders,
   getProviderById,
@@ -140,4 +248,5 @@ module.exports = {
   updateProvider,
   toggleProvider,
   deleteProvider,
+  evaluateFreeShipping,
 };
