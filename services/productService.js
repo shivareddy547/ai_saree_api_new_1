@@ -1,4 +1,5 @@
 const { Product, ProductVariant, ProductImage, Category } = require('../models');
+const { Op } = require('sequelize');
 const createProduct = async (productData) => {
   const {
     name,
@@ -94,29 +95,27 @@ const createProduct = async (productData) => {
   }
   return getProduct(product.id);
 };
-const getProducts = async (userId) => {
+const getProducts = async (userId, filters = {}) => {
+  const where = { userId };
+  if (filters.isActive !== undefined) {
+    where.isActive = filters.isActive;
+  }
+  if (filters.search) {
+    where[Op.or] = [
+      { name: { [Op.iLike]: `%${filters.search}%` } },
+      { defaultSku: { [Op.iLike]: `%${filters.search}%` } }
+    ];
+  }
+  if (filters.categoryId) {
+    where.categoryId = filters.categoryId;
+  }
   const products = await Product.findAll({
-    where: {
-      userId,
-      isActive: true, // only return active (non soft-deleted) products
-    },
+    where,
     include: [
-      {
-        model: ProductVariant,
-        as: 'variants',
-      },
-      {
-        model: ProductImage,
-        as: 'images',
-      },
-      {
-        model: Category,
-        as: 'category',
-      },
-      {
-        model: Category,
-        as: 'subcategory',
-      },
+      { model: ProductVariant, as: 'variants' },
+      { model: ProductImage, as: 'images' },
+      { model: Category, as: 'category' },
+      { model: Category, as: 'subcategory' },
     ],
     order: [['createdAt', 'DESC']],
   });
@@ -126,22 +125,10 @@ const getProduct = async (id) => {
   const product = await Product.findOne({
     where: { id, isActive: true },
     include: [
-      {
-        model: ProductVariant,
-        as: 'variants',
-      },
-      {
-        model: ProductImage,
-        as: 'images',
-      },
-      {
-        model: Category,
-        as: 'category',
-      },
-      {
-        model: Category,
-        as: 'subcategory',
-      },
+      { model: ProductVariant, as: 'variants' },
+      { model: ProductImage, as: 'images' },
+      { model: Category, as: 'category' },
+      { model: Category, as: 'subcategory' },
     ],
   });
   return product;
@@ -172,20 +159,17 @@ const updateProduct = async (id, productData) => {
     }
   }
   await product.update(updateFields);
-  // Optionally update variants / images if provided (kept simple)
   if (productData.variants && Array.isArray(productData.variants)) {
-    // existing variants update logic can stay as-is from previous implementation
+    // variants update logic can be added if needed
   }
   return getProduct(id);
 };
-// Soft delete – sets isActive = false instead of destroying the row
 const softDeleteProduct = async (id) => {
   const product = await Product.findOne({ where: { id, isActive: true } });
   if (!product) return false;
   await product.update({ isActive: false });
   return true;
 };
-// Keep hard delete available if needed internally (not exposed)
 const deleteProduct = async (id) => {
   const product = await Product.findByPk(id);
   if (!product) return false;

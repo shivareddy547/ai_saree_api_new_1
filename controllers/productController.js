@@ -2,7 +2,6 @@ const productService = require('../services/productService');
 const createProduct = async (req, res) => {
   try {
     const productData = req.body;
-    // Add the logged-in user's ID to the product data
     productData.userId = req.user.id;
     const product = await productService.createProduct(productData);
     res.status(201).json({
@@ -19,8 +18,22 @@ const createProduct = async (req, res) => {
 };
 const getProducts = async (req, res) => {
   try {
-    // Only get products belonging to the logged-in user (active only)
-    const products = await productService.getProducts(req.user.id);
+    const { search, status, categoryId } = req.query;
+    const filters = { userId: req.user.id };
+    if (status === 'deleted') {
+      filters.isActive = false;
+    } else if (status === 'all') {
+      // no isActive filter
+    } else {
+      filters.isActive = true;
+    }
+    if (search) {
+      filters.search = search.trim();
+    }
+    if (categoryId) {
+      filters.categoryId = parseInt(categoryId, 10);
+    }
+    const products = await productService.getProducts(req.user.id, filters);
     res.json({
       success: true,
       data: products,
@@ -41,7 +54,6 @@ const getProduct = async (req, res) => {
         error: 'Product not found',
       });
     }
-    // Check if the product belongs to the logged-in user
     if (product.userId !== req.user.id) {
       return res.status(403).json({
         success: false,
@@ -62,7 +74,6 @@ const getProduct = async (req, res) => {
 const updateProduct = async (req, res) => {
   try {
     const productId = req.params.id;
-    // First check if the product exists and belongs to the user
     const existingProduct = await productService.getProduct(productId);
     if (!existingProduct) {
       return res.status(404).json({
@@ -100,7 +111,6 @@ const updateProduct = async (req, res) => {
 const deleteProduct = async (req, res) => {
   try {
     const productId = req.params.id;
-    // First check if the product exists and belongs to the user
     const existingProduct = await productService.getProduct(productId);
     if (!existingProduct) {
       return res.status(404).json({
@@ -114,7 +124,6 @@ const deleteProduct = async (req, res) => {
         error: 'You do not have permission to delete this product',
       });
     }
-    // Soft delete: set isActive = false
     const deleted = await productService.softDeleteProduct(productId);
     if (!deleted) {
       return res.status(404).json({
