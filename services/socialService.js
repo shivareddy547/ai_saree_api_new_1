@@ -20,6 +20,31 @@ try {
 }
 
 /**
+ * Helper: replace the origin of a URL with a custom host.
+ * If newOrigin does not contain a protocol, "https://" is prepended.
+ * @param {string} url - The full URL to modify.
+ * @param {string} newOrigin - The new origin (e.g., "custom.com" or "https://custom.com").
+ * @returns {string} The URL with origin replaced, or the original if newOrigin is falsy or invalid.
+ */
+function replaceUrlOrigin(url, newOrigin) {
+  if (!newOrigin) return url;
+  try {
+    // Ensure newOrigin has a protocol
+    if (!/^https?:\/\//i.test(newOrigin)) {
+      newOrigin = 'https://' + newOrigin;
+    }
+    const parsed = new URL(url);
+    const newParsed = new URL(newOrigin);
+    parsed.protocol = newParsed.protocol;
+    parsed.host = newParsed.host;
+    return parsed.toString();
+  } catch (e) {
+    // If newOrigin is invalid, fallback to original URL
+    return url;
+  }
+}
+
+/**
  * Helper to load provider + connection for a user.
  */
 async function getProviderAndConnection(userId, providerId) {
@@ -48,6 +73,8 @@ async function getProviderAndConnection(userId, providerId) {
 /**
  * Build OAuth URL for a given provider.
  * Supports Instagram, Pinterest, Facebook, and YouTube.
+ * If a 'connecting_host' is provided in credentials, it will be used as the base URL
+ * for the authorization endpoint (replacing the default host).
  */
 const getOAuthUrl = async (providerId, userId) => {
   const provider = await Provider.findByPk(providerId);
@@ -67,6 +94,7 @@ const getOAuthUrl = async (providerId, userId) => {
     throw err;
   }
   const { provider_key, credentials } = provider;
+  const connectingHost = credentials.connecting_host ? credentials.connecting_host.trim() : '';
 
   if (provider_key === 'instagram') {
     let { app_id: clientId, redirect_uri: redirectUri, scope } = credentials || {};
@@ -79,11 +107,15 @@ const getOAuthUrl = async (providerId, userId) => {
       throw err;
     }
     const scopeStr = scope || 'instagram_business_basic,instagram_business_content_publish';
-    const url = `https://api.instagram.com/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&state=${providerId}`;
-    return url;
+    let defaultUrl = `https://api.instagram.com/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&state=${providerId}`;
+    if (connectingHost) {
+      defaultUrl = replaceUrlOrigin(defaultUrl, connectingHost);
+    }
+    return defaultUrl;
   } else if (provider_key === 'pinterest' && getPinterestOAuthUrl) {
     const baseUrl = getPinterestOAuthUrl(credentials);
-    return baseUrl + providerId;
+    // If connectingHost is provided, replace origin of the returned URL.
+    return connectingHost ? replaceUrlOrigin(baseUrl, connectingHost) : baseUrl + providerId;
   } else if (provider_key === 'facebook') {
     let { app_id: clientId, redirect_uri: redirectUri, scope } = credentials || {};
     clientId = clientId ? clientId.trim() : '';
@@ -95,8 +127,11 @@ const getOAuthUrl = async (providerId, userId) => {
       throw err;
     }
     const scopeStr = scope || 'pages_show_list,pages_read_engagement,pages_manage_posts,publish_video';
-    const url = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&state=${providerId}`;
-    return url;
+    let defaultUrl = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&state=${providerId}`;
+    if (connectingHost) {
+      defaultUrl = replaceUrlOrigin(defaultUrl, connectingHost);
+    }
+    return defaultUrl;
   } else if (provider_key === 'youtube') {
     let { client_id: clientId, redirect_uri: redirectUri, scope } = credentials || {};
     clientId = clientId ? clientId.trim() : '';
@@ -108,8 +143,11 @@ const getOAuthUrl = async (providerId, userId) => {
       throw err;
     }
     const scopeStr = scope || 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly';
-    const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&access_type=offline&prompt=consent&state=${providerId}`;
-    return url;
+    let defaultUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopeStr)}&response_type=code&access_type=offline&prompt=consent&state=${providerId}`;
+    if (connectingHost) {
+      defaultUrl = replaceUrlOrigin(defaultUrl, connectingHost);
+    }
+    return defaultUrl;
   }
 
   const err = new Error(`OAuth for ${provider_key} is not supported`);
@@ -534,7 +572,6 @@ const postVideo = async (userId, providerId, videoUrl, mediaType, caption, title
 
   if (provider_key === 'instagram') {
     const { postReel } = require('./instagramService');
-    // Pass real access token + accountId for live Instagram Graph API
     const result = await postReel(
       connection.accessToken,
       connection.accountId,
