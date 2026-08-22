@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { Provider, PickupLocation, Product, ProductVariant, Cart, CartItem } = require('../models');
+const { Provider, PickupLocation, Product, ProductVariant, Cart, CartItem, User } = require('../models');
 const SHIPROCKET_BASE = {
   production: 'https://apiv2.shiprocket.in/v1/external',
   sandbox: 'https://apiv2.shiprocket.in/v1/external',
@@ -66,9 +66,7 @@ const getEnabledShiprocketProvider = async () => {
     order: [['createdAt', 'DESC']],
   });
   if (!provider) {
-    const err = new Error(
-      'No enabled Shiprocket provider found. Please configure and enable it in Shipment Providers Setup.'
-    );
+    const err = new Error('No enabled Shiprocket provider found');
     err.status = 400;
     throw err;
   }
@@ -84,9 +82,7 @@ const getEnabledDelhiveryProvider = async () => {
     order: [['createdAt', 'DESC']],
   });
   if (!provider) {
-    const err = new Error(
-      'No enabled Delhivery provider found. Please configure and enable it in Shipment Providers Setup.'
-    );
+    const err = new Error('No enabled Delhivery provider found');
     err.status = 400;
     throw err;
   }
@@ -94,105 +90,96 @@ const getEnabledDelhiveryProvider = async () => {
 };
 const getProviderById = async (id) => {
   const provider = await Provider.findByPk(id);
-  if (!provider || provider.provider_type !== 'shipment' || !provider.is_enabled) {
-    const err = new Error('Shipment provider not found or not enabled');
+  if (!provider) {
+    const err = new Error('Shipment provider not found');
     err.status = 404;
     throw err;
   }
   return provider;
 };
+const getDefaultPickupLocation = async () => {
+  let loc = await PickupLocation.findOne({
+    where: { is_active: true, is_default: true },
+  });
+  if (!loc) {
+    loc = await PickupLocation.findOne({
+      where: { is_active: true },
+      order: [['createdAt', 'ASC']],
+    });
+  }
+  return loc;
+};
+const getActivePickupLocations = async () => {
+  return PickupLocation.findAll({
+    where: { is_active: true },
+    order: [
+      ['is_default', 'DESC'],
+      ['createdAt', 'ASC'],
+    ],
+  });
+};
 const getShiprocketToken = async (provider) => {
   const now = Date.now();
   if (
     tokenCache.token &&
-    tokenCache.providerId === provider.id &&
-    tokenCache.expiresAt > now + 60000
+    tokenCache.expiresAt > now &&
+    tokenCache.providerId === provider.id
   ) {
     return tokenCache.token;
   }
-  const creds = provider.credentials || {};
-  const email = creds.email;
-  const password = creds.password;
+  const env = (provider.credentials?.environment || 'production').toLowerCase();
+  const base = SHIPROCKET_BASE[env] || SHIPROCKET_BASE.production;
+  const email = provider.credentials?.email;
+  const password = provider.credentials?.password;
   if (!email || !password) {
-    const err = new Error(
-      'Shiprocket credentials incomplete (email and password required)'
-    );
+    const err = new Error('Shiprocket credentials incomplete (email/password required)');
     err.status = 400;
     throw err;
   }
-  const env = (creds.environment || 'production').toLowerCase();
-  const base = SHIPROCKET_BASE[env] || SHIPROCKET_BASE.production;
-  try {
-    const res = await axios.post(`${base}/auth/login`, { email, password });
-    const token = res.data?.token;
-    if (!token) {
-      const err = new Error('Failed to obtain Shiprocket token');
-      err.status = 502;
-      throw err;
-    }
-    tokenCache = {
-      token,
-      expiresAt: now + 9 * 24 * 60 * 60 * 1000,
-      providerId: provider.id,
-    };
-    return token;
-  } catch (e) {
-    const msg =
-      e.response?.data?.message || e.message || 'Shiprocket authentication failed';
-    const err = new Error(msg);
-    err.status = e.response?.status || 502;
+  const res = await axios.post(`${base}/auth/login`, {
+    email,
+    password,
+  });
+  const token = res.data?.token;
+  if (!token) {
+    const err = new Error('Failed to obtain Shiprocket token');
+    err.status = 502;
     throw err;
   }
+  tokenCache = {
+    token,
+    expiresAt: now + 9 * 24 * 60 * 60 * 1000,
+    providerId: provider.id,
+  };
+  return token;
 };
 const getDelhiveryToken = (provider) => {
-  const creds = provider.credentials || {};
-  const token = creds.api_token || creds.token || creds.api_key;
+  const token = provider.credentials?.api_token;
   if (!token) {
-    const err = new Error(
-      'Delhivery credentials incomplete (api_token required)'
-    );
+    const err = new Error('Delhivery API token missing');
     err.status = 400;
     throw err;
   }
   return token;
 };
-const getDefaultPickupLocation = async () => {
-  const loc = await PickupLocation.findOne({
-    where: { isDefault: true, isActive: true },
-  });
-  if (loc) return loc;
-  return await PickupLocation.findOne({ where: { isActive: true } });
-};
-const getActivePickupLocations = async () => {
-  return await PickupLocation.findAll({
-    where: { isActive: true },
-    order: [
-      ['isDefault', 'DESC'],
-      ['name', 'ASC'],
-    ],
-  });
-};
-/**
- * Fetch rates from a single Shiprocket provider.
- */
-const getShiprocketRates = async (provider, {
-  pickupPincode,
-  deliveryPincode,
-  finalWeight,
-  finalLength,
-  finalBreadth,
-  finalHeight,
-  cod,
-  declaredValue,
-}) => {
+const getShiprocketRates = async (
+  provider,
+  {
+    pickupPincode,
+    deliveryPincode,
+    finalWeight,
+    finalLength,
+    finalBreadth,
+    finalHeight,
+    cod,
+    declaredValue,
+  }
+) => {
   const token = await getShiprocketToken(provider);
   const env = (provider.credentials?.environment || 'production').toLowerCase();
   const base = SHIPROCKET_BASE[env] || SHIPROCKET_BASE.production;
   const res = await axios.get(`${base}/courier/serviceability/`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { Authorization: `Bearer ${token}` },
     params: {
       pickup_postcode: pickupPincode,
       delivery_postcode: String(deliveryPincode).trim(),
@@ -204,9 +191,11 @@ const getShiprocketRates = async (provider, {
       declared_value: declaredValue || 0,
     },
   });
-  const data = res.data?.data || {};
-  const available = data.available_courier_companies || [];
-  return available.map((c) => ({
+  const available =
+    res.data?.data?.available_courier_companies ||
+    res.data?.available_courier_companies ||
+    [];
+  return (available || []).map((c) => ({
     courierCompanyId: `shiprocket-${c.courier_company_id}`,
     courierName: c.courier_name || c.courier_company_name || 'Courier',
     rate: parseFloat(c.rate) || parseFloat(c.freight_charge) || 0,
@@ -223,109 +212,89 @@ const getShiprocketRates = async (provider, {
     rawCourierId: String(c.courier_company_id),
   }));
 };
-/**
- * Fetch rates from a single Delhivery provider (Surface + Express).
- * Weight for Delhivery API is in grams (cgm).
- */
-const getDelhiveryRates = async (provider, {
-  pickupPincode,
-  deliveryPincode,
-  finalWeight,
-  cod,
-}) => {
+const getDelhiveryRates = async (
+  provider,
+  { pickupPincode, deliveryPincode, finalWeight, cod }
+) => {
   const token = getDelhiveryToken(provider);
   const env = (provider.credentials?.environment || 'production').toLowerCase();
   const base = DELHIVERY_BASE[env] || DELHIVERY_BASE.production;
   const weightGrams = Math.max(1, Math.round(finalWeight * 1000));
   const fetchMode = async (mode) => {
-    const res = await axios.get(
-      `${base}/api/kinko/v1/invoice/charges/.json`,
-      {
-        headers: {
-          Authorization: `Token ${token}`,
-          Accept: 'application/json',
-        },
-        params: {
-          md: mode,
-          cgm: weightGrams,
-          o_pin: pickupPincode,
-          d_pin: String(deliveryPincode).trim(),
-          ss: 'Delivered',
-        },
-      }
-    );
+    const res = await axios.get(`${base}/api/kinko/v1/invoice/charges/.json`, {
+      headers: {
+        Authorization: `Token ${token}`,
+        Accept: 'application/json',
+      },
+      params: {
+        md: mode,
+        cgm: weightGrams,
+        o_pin: pickupPincode,
+        d_pin: String(deliveryPincode).trim(),
+        ss: 'Delivered',
+      },
+    });
     return res.data;
   };
   const rates = [];
   try {
-    const surfaceResp = await fetchMode('S');
-    let surfaceRate =
-      (Array.isArray(surfaceResp) && surfaceResp[0]?.total_amount) ||
-      surfaceResp?.total_amount ||
-      null;
-    if (surfaceRate == null || surfaceRate === '') {
-      const nested = JSON.stringify(surfaceResp);
-      const m = nested.match(/"total_amount"\s*:\s*([0-9.]+)/);
-      if (m) surfaceRate = parseFloat(m[1]);
-    }
-    if (surfaceRate != null && surfaceRate !== '' && !Number.isNaN(parseFloat(surfaceRate))) {
+    const surface = await fetchMode('S');
+    if (surface && (Array.isArray(surface) ? surface[0] : surface)) {
+      const item = Array.isArray(surface) ? surface[0] : surface;
+      const charge =
+        parseFloat(item.total_amount) ||
+        parseFloat(item.charged_weight_amount) ||
+        parseFloat(item.gross_amount) ||
+        0;
       rates.push({
         courierCompanyId: 'delhivery-S',
-        courierName: 'Delhivery Surface',
-        rate: parseFloat(surfaceRate) || 0,
-        estimatedDays: 3,
-        etd: '1-3 days',
-        freightCharge: parseFloat(surfaceRate) || 0,
+        courierName: `${provider.name || 'Delhivery'} Surface`,
+        rate: charge,
+        estimatedDays: null,
+        etd: null,
+        freightCharge: charge,
         codCharges: 0,
         isSurface: true,
         rating: null,
         providerId: provider.id,
         providerKey: 'delhivery',
         providerName: provider.name || 'Delhivery',
-        rawCourierId: 'S',
         shippingMode: 'Surface',
+        rawCourierId: 'S',
       });
     }
-  } catch (e) {
-    console.warn('Delhivery Surface rate failed:', e.response?.data || e.message);
-  }
+  } catch (_) {}
   try {
-    const expressResp = await fetchMode('E');
-    let expressRate =
-      (Array.isArray(expressResp) && expressResp[0]?.total_amount) ||
-      expressResp?.total_amount ||
-      null;
-    if (expressRate == null || expressRate === '') {
-      const nested = JSON.stringify(expressResp);
-      const m = nested.match(/"total_amount"\s*:\s*([0-9.]+)/);
-      if (m) expressRate = parseFloat(m[1]);
-    }
-    if (expressRate != null && expressRate !== '' && !Number.isNaN(parseFloat(expressRate))) {
+    const express = await fetchMode('E');
+    if (express && (Array.isArray(express) ? express[0] : express)) {
+      const item = Array.isArray(express) ? express[0] : express;
+      const charge =
+        parseFloat(item.total_amount) ||
+        parseFloat(item.charged_weight_amount) ||
+        parseFloat(item.gross_amount) ||
+        0;
       rates.push({
         courierCompanyId: 'delhivery-E',
-        courierName: 'Delhivery Express',
-        rate: parseFloat(expressRate) || 0,
-        estimatedDays: 2,
-        etd: '1-2 days',
-        freightCharge: parseFloat(expressRate) || 0,
+        courierName: `${provider.name || 'Delhivery'} Express`,
+        rate: charge,
+        estimatedDays: null,
+        etd: null,
+        freightCharge: charge,
         codCharges: 0,
         isSurface: false,
         rating: null,
         providerId: provider.id,
         providerKey: 'delhivery',
         providerName: provider.name || 'Delhivery',
-        rawCourierId: 'E',
         shippingMode: 'Express',
+        rawCourierId: 'E',
       });
     }
-  } catch (e) {
-    console.warn('Delhivery Express rate failed:', e.response?.data || e.message);
-  }
+  } catch (_) {}
   return rates;
 };
 /**
- * Store Pickup rates – always ₹0. One option per active pickup location
- * so the customer can choose which store to collect from.
+ * Store Pickup – one free option per active pickup location.
  */
 const getStorePickupRates = async (provider) => {
   const locations = await getActivePickupLocations();
@@ -386,9 +355,57 @@ const getStorePickupRates = async (provider) => {
   });
 };
 /**
+ * Check whether free_shipping provider conditions match current order context.
+ * Any enabled condition matching is enough (OR logic).
+ */
+const isFreeShippingApplicable = (provider, { orderTotal, customerEmail, pincode }) => {
+  const c = provider.credentials || {};
+  const normalizeList = (str) =>
+    String(str || '')
+      .split(/[,;\n]+/)
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+  let matched = false;
+  if (c.use_order_total === 'true') {
+    const min = Number(c.min_order_total) || 0;
+    if (Number(orderTotal) >= min) matched = true;
+  }
+  if (c.use_emails === 'true') {
+    const emails = normalizeList(c.allowed_emails);
+    const email = String(customerEmail || '').trim().toLowerCase();
+    if (email && emails.includes(email)) matched = true;
+  }
+  if (c.use_pincodes === 'true') {
+    const pins = normalizeList(c.allowed_pincodes);
+    const pin = String(pincode || '').trim().toLowerCase();
+    if (pin && pins.includes(pin)) matched = true;
+  }
+  return matched;
+};
+const getFreeShippingRate = (provider) => ({
+  courierCompanyId: `free-shipping-${provider.id}`,
+  courierName: provider.name || 'Free Shipping',
+  rate: 0,
+  estimatedDays: null,
+  etd: 'Free shipping applied',
+  freightCharge: 0,
+  codCharges: 0,
+  isSurface: false,
+  rating: null,
+  providerId: provider.id,
+  providerKey: 'free_shipping',
+  providerName: provider.name || 'Free Shipping',
+  rawCourierId: 'free-shipping',
+  isStorePickup: false,
+  isFreeShipping: true,
+  pickupLocationId: null,
+  pickupLocationName: null,
+  pickupLocationAddress: null,
+});
+/**
  * Retrieve shipping rates from EVERY enabled shipment provider.
  * Returns combined, sorted list so the user can pick any option.
- * Store Pickup (when enabled) always appears with rate ₹0.
+ * Store Pickup and applicable Free Shipping appear with rate ₹0.
  */
 const getShippingRates = async ({
   deliveryPincode,
@@ -414,12 +431,15 @@ const getShippingRates = async ({
     err.status = 400;
     throw err;
   }
-  const hasOnlyStorePickup = enabledProviders.every(
-    (p) => (p.provider_key || '').toLowerCase() === 'store_pickup'
+  const isZeroCostOnlyKey = (key) => {
+    const k = (key || '').toLowerCase();
+    return k === 'store_pickup' || k === 'free_shipping';
+  };
+  const hasOnlyZeroCostProviders = enabledProviders.every((p) =>
+    isZeroCostOnlyKey(p.provider_key)
   );
-  // Delivery pincode is required only when at least one courier provider is enabled
   if (
-    !hasOnlyStorePickup &&
+    !hasOnlyZeroCostProviders &&
     (!deliveryPincode || String(deliveryPincode).trim().length < 5)
   ) {
     const err = new Error('Valid delivery pincode is required');
@@ -431,7 +451,6 @@ const getShippingRates = async ({
   if (pickup && (pickup.zipCode || pickup.zip_code)) {
     pickupPincode = String(pickup.zipCode || pickup.zip_code).trim();
   }
-  // Courier providers need a default pickup with pincode
   const hasCourierProvider = enabledProviders.some((p) => {
     const k = (p.provider_key || '').toLowerCase();
     return k === 'shiprocket' || k === 'delhivery';
@@ -459,6 +478,13 @@ const getShippingRates = async ({
   const finalHeight = pkg
     ? pkg.height
     : Math.max(1, parseFloat(height) || DEFAULT_HEIGHT_CM);
+  let customerEmail = '';
+  if (userId) {
+    try {
+      const user = await User.findByPk(userId, { attributes: ['email'] });
+      customerEmail = user?.email || '';
+    } catch (_) {}
+  }
   const allRates = [];
   const errors = [];
   for (const provider of enabledProviders) {
@@ -467,6 +493,16 @@ const getShippingRates = async ({
       if (key === 'store_pickup') {
         const rates = await getStorePickupRates(provider);
         allRates.push(...rates);
+      } else if (key === 'free_shipping') {
+        if (
+          isFreeShippingApplicable(provider, {
+            orderTotal: declaredValue,
+            customerEmail,
+            pincode: deliveryPincode,
+          })
+        ) {
+          allRates.push(getFreeShippingRate(provider));
+        }
       } else if (key === 'shiprocket') {
         if (!pickupPincode || !deliveryPincode) continue;
         const rates = await getShiprocketRates(provider, {
@@ -508,10 +544,12 @@ const getShippingRates = async ({
       console.error(`Rates error [${provider.name}]:`, msg);
     }
   }
-  // Store pickup rates (₹0) first, then cheapest courier rates
+  // Zero-cost options first, then cheapest courier rates
   allRates.sort((a, b) => {
-    if (a.isStorePickup && !b.isStorePickup) return -1;
-    if (!a.isStorePickup && b.isStorePickup) return 1;
+    const aFree = a.isStorePickup || a.isFreeShipping || a.rate === 0;
+    const bFree = b.isStorePickup || b.isFreeShipping || b.rate === 0;
+    if (aFree && !bFree) return -1;
+    if (!aFree && bFree) return 1;
     return a.rate - b.rate;
   });
   if (allRates.length === 0) {
@@ -541,9 +579,6 @@ const getShippingRates = async ({
     errors: errors.length > 0 ? errors : undefined,
   };
 };
-/**
- * Parse multi-line shipping address text (as stored on orders) into structured fields.
- */
 const parseShippingAddressText = (text) => {
   const result = {
     fullName: '',
@@ -679,9 +714,6 @@ const validateAddressForShiprocket = (addr) => {
     throw err;
   }
 };
-/**
- * Create order on Shiprocket.
- */
 const createShiprocketOrder = async (order, orderItems, addrObj, selectedCourier = {}) => {
   const provider = selectedCourier.shipmentProviderId
     ? await getProviderById(selectedCourier.shipmentProviderId)
@@ -808,9 +840,6 @@ const createShiprocketOrder = async (order, orderItems, addrObj, selectedCourier
     };
   }
 };
-/**
- * Ensure Delhivery warehouse/pickup location exists (idempotent).
- */
 const ensureDelhiveryWarehouse = async (provider, pickup, addr) => {
   const token = getDelhiveryToken(provider);
   const env = (provider.credentials?.environment || 'production').toLowerCase();
@@ -863,9 +892,6 @@ const ensureDelhiveryWarehouse = async (provider, pickup, addr) => {
     return { success: false, message: msg };
   }
 };
-/**
- * Create order / manifestation on Delhivery.
- */
 const createDelhiveryOrder = async (order, orderItems, addrObj, selectedCourier = {}) => {
   const provider = selectedCourier.shipmentProviderId
     ? await getProviderById(selectedCourier.shipmentProviderId)
@@ -1021,9 +1047,6 @@ const createDelhiveryOrder = async (order, orderItems, addrObj, selectedCourier 
     };
   }
 };
-/**
- * Store Pickup – no external courier call. Mark as ready for pickup.
- */
 const createStorePickupOrder = async (order, orderItems, addrObj, selectedCourier = {}) => {
   let provider = null;
   if (selectedCourier.shipmentProviderId) {
@@ -1099,8 +1122,47 @@ const createStorePickupOrder = async (order, orderItems, addrObj, selectedCourie
   };
 };
 /**
- * Generic create shipment – dispatches to the correct provider implementation.
+ * Free shipping – no external courier. Mark order as free-shipping applied.
  */
+const createFreeShippingOrder = async (order, orderItems, addrObj, selectedCourier = {}) => {
+  let provider = null;
+  if (selectedCourier.shipmentProviderId) {
+    try {
+      provider = await getProviderById(selectedCourier.shipmentProviderId);
+    } catch (_) {}
+  }
+  if (!provider) {
+    provider = await Provider.findOne({
+      where: {
+        provider_type: 'shipment',
+        provider_key: 'free_shipping',
+        is_enabled: true,
+      },
+      order: [['createdAt', 'DESC']],
+    });
+  }
+  if (!provider) {
+    const err = new Error(
+      'No enabled Free Shipping provider found. Please configure and enable it in Shipment Providers Setup.'
+    );
+    err.status = 400;
+    throw err;
+  }
+  return {
+    shiprocketOrderId: null,
+    shiprocketShipmentId: null,
+    awbCode: null,
+    status: 'free_shipping',
+    raw: {
+      type: 'free_shipping',
+      message: 'Free shipping applied based on configured conditions',
+      providerName: provider.name,
+    },
+    providerId: provider.id,
+    providerKey: 'free_shipping',
+    isFreeShipping: true,
+  };
+};
 const createShipmentOrder = async (order, orderItems, addrObj, selectedCourier = {}) => {
   let providerKey = null;
   if (selectedCourier.shipmentProviderId) {
@@ -1113,6 +1175,8 @@ const createShipmentOrder = async (order, orderItems, addrObj, selectedCourier =
     const cid = String(selectedCourier.courierCompanyId);
     if (cid.startsWith('store-pickup') || selectedCourier.isStorePickup) {
       providerKey = 'store_pickup';
+    } else if (cid.startsWith('free-shipping') || selectedCourier.isFreeShipping) {
+      providerKey = 'free_shipping';
     } else if (cid.startsWith('delhivery-') || cid === 'S' || cid === 'E') {
       providerKey = 'delhivery';
     } else {
@@ -1141,15 +1205,29 @@ const createShipmentOrder = async (order, orderItems, addrObj, selectedCourier =
         if (storePickup) {
           providerKey = 'store_pickup';
         } else {
-          const err = new Error('No enabled shipment provider available');
-          err.status = 400;
-          throw err;
+          const freeShip = await Provider.findOne({
+            where: {
+              provider_type: 'shipment',
+              provider_key: 'free_shipping',
+              is_enabled: true,
+            },
+          });
+          if (freeShip) {
+            providerKey = 'free_shipping';
+          } else {
+            const err = new Error('No enabled shipment provider available');
+            err.status = 400;
+            throw err;
+          }
         }
       }
     }
   }
   if (providerKey === 'store_pickup') {
     return createStorePickupOrder(order, orderItems, addrObj, selectedCourier);
+  }
+  if (providerKey === 'free_shipping') {
+    return createFreeShippingOrder(order, orderItems, addrObj, selectedCourier);
   }
   if (providerKey === 'delhivery') {
     return createDelhiveryOrder(order, orderItems, addrObj, selectedCourier);
@@ -1158,7 +1236,6 @@ const createShipmentOrder = async (order, orderItems, addrObj, selectedCourier =
 };
 const trackShipment = async (order) => {
   if (!order.awbCode && !order.shiprocketShipmentId && !order.shiprocketOrderId) {
-    // Store pickup has no external tracking
     if (
       order.shipmentStatus === 'ready_for_pickup' ||
       (order.shipmentDetails && order.shipmentDetails.type === 'store_pickup')
@@ -1168,6 +1245,17 @@ const trackShipment = async (order) => {
         awbCode: null,
         raw: order.shipmentDetails || { type: 'store_pickup' },
         providerKey: 'store_pickup',
+      };
+    }
+    if (
+      order.shipmentStatus === 'free_shipping' ||
+      (order.shipmentDetails && order.shipmentDetails.type === 'free_shipping')
+    ) {
+      return {
+        status: 'free_shipping',
+        awbCode: null,
+        raw: order.shipmentDetails || { type: 'free_shipping' },
+        providerKey: 'free_shipping',
       };
     }
     const err = new Error('No AWB / shipment ID available to track');
@@ -1187,6 +1275,14 @@ const trackShipment = async (order) => {
       awbCode: null,
       raw: order.shipmentDetails || { type: 'store_pickup' },
       providerKey: 'store_pickup',
+    };
+  }
+  if (key === 'free_shipping') {
+    return {
+      status: order.shipmentStatus || 'free_shipping',
+      awbCode: null,
+      raw: order.shipmentDetails || { type: 'free_shipping' },
+      providerKey: 'free_shipping',
     };
   }
   if (key === 'delhivery' || (!key && order.awbCode && !order.shiprocketOrderId)) {
@@ -1215,7 +1311,6 @@ const trackShipment = async (order) => {
       throw err;
     }
   }
-  // Default: Shiprocket
   provider = provider || (await getEnabledShiprocketProvider());
   const token = await getShiprocketToken(provider);
   const env = (provider.credentials?.environment || 'production').toLowerCase();
@@ -1269,6 +1364,16 @@ const cancelShipment = async (order) => {
         raw: null,
       };
     }
+    if (
+      order.shipmentStatus === 'free_shipping' ||
+      (order.shipmentDetails && order.shipmentDetails.type === 'free_shipping')
+    ) {
+      return {
+        success: true,
+        message: 'Free shipping order cancelled (no external shipment)',
+        raw: null,
+      };
+    }
     const err = new Error('No Shiprocket order/AWB to cancel');
     err.status = 400;
     throw err;
@@ -1281,6 +1386,13 @@ const cancelShipment = async (order) => {
     return {
       success: true,
       message: 'Store pickup order cancelled (no external shipment)',
+      raw: null,
+    };
+  }
+  if (key === 'free_shipping') {
+    return {
+      success: true,
+      message: 'Free shipping order cancelled (no external shipment)',
       raw: null,
     };
   }
@@ -1340,6 +1452,7 @@ module.exports = {
   createShiprocketOrder,
   createDelhiveryOrder,
   createStorePickupOrder,
+  createFreeShippingOrder,
   createShipmentOrder,
   trackShipment,
   cancelShipment,
