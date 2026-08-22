@@ -7,7 +7,6 @@ const {
 } = require('./instagramService');
 const facebookService = require('./facebookService');
 const youtubeService = require('./youtubeService');
-
 // Optional Pinterest helpers
 let getPinterestOAuthUrl, exchangePinterestCode, getPinterestUserInfo;
 try {
@@ -18,7 +17,6 @@ try {
 } catch (e) {
   // pinterestService may not exist
 }
-
 /**
  * Helper: replace the origin of a URL with a custom host.
  * If newOrigin does not contain a protocol, "https://" is prepended.
@@ -43,7 +41,6 @@ function replaceUrlOrigin(url, newOrigin) {
     return url;
   }
 }
-
 /**
  * Helper to load provider + connection for a user.
  */
@@ -69,7 +66,6 @@ async function getProviderAndConnection(userId, providerId) {
   });
   return { provider, connection };
 }
-
 /**
  * Build OAuth URL for a given provider.
  * Supports Instagram, Pinterest, Facebook, and YouTube.
@@ -95,7 +91,6 @@ const getOAuthUrl = async (providerId, userId) => {
   }
   const { provider_key, credentials } = provider;
   const connectingHost = credentials.connecting_host ? credentials.connecting_host.trim() : '';
-
   if (provider_key === 'instagram') {
     let { app_id: clientId, redirect_uri: redirectUri, scope } = credentials || {};
     clientId = clientId ? clientId.trim() : '';
@@ -114,7 +109,6 @@ const getOAuthUrl = async (providerId, userId) => {
     return defaultUrl;
   } else if (provider_key === 'pinterest' && getPinterestOAuthUrl) {
     const baseUrl = getPinterestOAuthUrl(credentials);
-    // If connectingHost is provided, replace origin of the returned URL.
     return connectingHost ? replaceUrlOrigin(baseUrl, connectingHost) : baseUrl + providerId;
   } else if (provider_key === 'facebook') {
     let { app_id: clientId, redirect_uri: redirectUri, scope } = credentials || {};
@@ -149,12 +143,10 @@ const getOAuthUrl = async (providerId, userId) => {
     }
     return defaultUrl;
   }
-
   const err = new Error(`OAuth for ${provider_key} is not supported`);
   err.status = 400;
   throw err;
 };
-
 /**
  * Complete OAuth connect flow for a provider.
  * Fully supports Instagram, Pinterest, Facebook and YouTube.
@@ -178,7 +170,6 @@ const connect = async (userId, code, state) => {
     throw err;
   }
   const { provider_key, credentials } = provider;
-
   // --- Instagram ---
   if (provider_key === 'instagram') {
     let { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri } = credentials || {};
@@ -256,7 +247,6 @@ const connect = async (userId, code, state) => {
       tokenExpiresAt: expiresAt,
     };
   }
-
   // --- Pinterest ---
   else if (provider_key === 'pinterest') {
     if (!exchangePinterestCode || !getPinterestUserInfo) {
@@ -325,7 +315,6 @@ const connect = async (userId, code, state) => {
       tokenExpiresAt: expiresAt,
     };
   }
-
   // --- Facebook ---
   else if (provider_key === 'facebook') {
     let { app_id: clientId, app_secret: clientSecret, redirect_uri: redirectUri } = credentials || {};
@@ -398,7 +387,6 @@ const connect = async (userId, code, state) => {
       tokenExpiresAt: expiresAt,
     };
   }
-
   // --- YouTube ---
   else if (provider_key === 'youtube') {
     let { client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri } = credentials || {};
@@ -461,14 +449,12 @@ const connect = async (userId, code, state) => {
       tokenExpiresAt: expiresAt,
     };
   }
-
   else {
     const err = new Error(`Provider ${provider_key} not yet supported for connection`);
     err.status = 400;
     throw err;
   }
 };
-
 /**
  * Get all connections for a user.
  */
@@ -495,7 +481,6 @@ const getConnections = async (userId) => {
     provider: conn.provider,
   }));
 };
-
 /**
  * Get status for a specific provider connection.
  */
@@ -523,7 +508,6 @@ const getConnectionStatus = async (userId, providerId) => {
     id: conn.id,
   };
 };
-
 /**
  * Disconnect a connection.
  */
@@ -551,7 +535,6 @@ const disconnect = async (userId, connectionId) => {
   await conn.destroy();
   return { disconnected: true };
 };
-
 /**
  * Post video to a social provider.
  * Supports Instagram (real Graph API), Facebook, and YouTube.
@@ -569,7 +552,6 @@ const postVideo = async (userId, providerId, videoUrl, mediaType, caption, title
     throw err;
   }
   const { provider_key } = provider;
-
   if (provider_key === 'instagram') {
     const { postReel } = require('./instagramService');
     const result = await postReel(
@@ -587,7 +569,12 @@ const postVideo = async (userId, providerId, videoUrl, mediaType, caption, title
       video_url: videoUrl,
     };
   } else if (provider_key === 'facebook') {
-    const postTitle = caption || 'Video post';
+    // Facebook expects 'title' to be <= 255 chars, description can be longer.
+    let postTitle = caption ? caption.split('\n')[0] : 'Video post';
+    // Truncate title if > 255
+    if (postTitle.length > 255) {
+      postTitle = postTitle.substring(0, 252) + '...';
+    }
     const description = caption || '';
     const result = await facebookService.postVideoToPage(
       connection.accessToken,
@@ -630,7 +617,6 @@ const postVideo = async (userId, providerId, videoUrl, mediaType, caption, title
     throw err;
   }
 };
-
 /**
  * Fetch live provider stats for dashboard
  */
@@ -688,7 +674,6 @@ const getProviderStats = async (userId, providerId) => {
   }
   return baseResponse;
 };
-
 module.exports = {
   getOAuthUrl,
   connect,
