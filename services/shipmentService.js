@@ -1,106 +1,60 @@
 const axios = require('axios');
-const { Provider, PickupLocation, Product } = require('../models');
-/** Default weight (kg) for a saree/dress when product.weight is missing or zero */
-const DEFAULT_PRODUCT_WEIGHT_KG = 0.5;
-const DEFAULT_LENGTH_CM = 30;
-const DEFAULT_BREADTH_CM = 25;
-const DEFAULT_HEIGHT_CM = 5;
-/**
- * Sum package weight/dims from line items (cart or order items).
- * Weight = sum(product.weight * qty); missing weight uses DEFAULT_PRODUCT_WEIGHT_KG.
- * Dimensions = max of each axis across items (cm).
- */
-const computePackageFromItems = (items) => {
-  let totalWeight = 0;
-  let maxLength = 0;
-  let maxBreadth = 0;
-  let maxHeight = 0;
-  let count = 0;
-  (items || []).forEach((item) => {
-    const product = item.product || item;
-    const qty = Math.max(1, parseInt(item.quantity, 10) || 1);
-    count += qty;
-    const rawW = parseFloat(product?.weight);
-    const unitWeight =
-      !Number.isNaN(rawW) && rawW > 0 ? rawW : DEFAULT_PRODUCT_WEIGHT_KG;
-    totalWeight += unitWeight * qty;
-    const l = parseFloat(product?.length);
-    const b = parseFloat(product?.breadth);
-    const h = parseFloat(product?.height);
-    if (!Number.isNaN(l) && l > maxLength) maxLength = l;
-    if (!Number.isNaN(b) && b > maxBreadth) maxBreadth = b;
-    if (!Number.isNaN(h) && h > maxHeight) maxHeight = h;
-  });
-  if (count === 0) {
-    return {
-      weight: DEFAULT_PRODUCT_WEIGHT_KG,
-      length: DEFAULT_LENGTH_CM,
-      breadth: DEFAULT_BREADTH_CM,
-      height: DEFAULT_HEIGHT_CM,
-    };
-  }
-  return {
-    weight: Math.max(0.1, totalWeight),
-    length: maxLength > 0 ? maxLength : DEFAULT_LENGTH_CM,
-    breadth: maxBreadth > 0 ? maxBreadth : DEFAULT_BREADTH_CM,
-    height: maxHeight > 0 ? maxHeight : DEFAULT_HEIGHT_CM,
-  };
-};
-/**
- * Load authenticated user's cart and resolve product dimensions/weights from DB.
- */
-const getCartPackageForUser = async (userId) => {
-  if (!userId) return null;
-  try {
-    const cartService = require('./cartService');
-    const items = await cartService.getCart(userId);
-    if (!items || items.length === 0) return null;
-    const enriched = [];
-    for (const item of items) {
-      const productId = item.productId || item.product?.id;
-      let product = item.product;
-      const needsDims =
-        !product ||
-        product.weight == null ||
-        product.weight === undefined;
-      if (productId && needsDims) {
-        const full = await Product.findByPk(productId, {
-          attributes: [
-            'id',
-            'name',
-            'weight',
-            'length',
-            'breadth',
-            'height',
-            'defaultSku',
-          ],
-        });
-        if (full) product = full.toJSON ? full.toJSON() : full;
-      }
-      enriched.push({
-        quantity: item.quantity || 1,
-        product: product || item.product || {},
-        productId,
-      });
-    }
-    return computePackageFromItems(enriched);
-  } catch (e) {
-    console.warn('getCartPackageForUser failed:', e.message);
-    return null;
-  }
-};
+const { Provider, PickupLocation, Product, ProductVariant, Cart, CartItem } = require('../models');
 const SHIPROCKET_BASE = {
   production: 'https://apiv2.shiprocket.in/v1/external',
   sandbox: 'https://apiv2.shiprocket.in/v1/external',
 };
 const DELHIVERY_BASE = {
   production: 'https://track.delhivery.com',
-  sandbox: 'https://track.delhivery.com',
+  sandbox: 'https://staging-express.delhivery.com',
 };
-let tokenCache = {
-  token: null,
-  expiresAt: 0,
-  providerId: null,
+const DEFAULT_PRODUCT_WEIGHT_KG = 0.5;
+const DEFAULT_LENGTH_CM = 10;
+const DEFAULT_BREADTH_CM = 10;
+const DEFAULT_HEIGHT_CM = 5;
+let tokenCache = { token: null, expiresAt: 0, providerId: null };
+const computePackageFromItems = (orderItems) => {
+  let weight = 0;
+  let length = DEFAULT_LENGTH_CM;
+  let breadth = DEFAULT_BREADTH_CM;
+  let height = DEFAULT_HEIGHT_CM;
+  (orderItems || []).forEach((item) => {
+    const product = item.product || {};
+    const qty = parseInt(item.quantity, 10) || 1;
+    const w = parseFloat(product.weight) || DEFAULT_PRODUCT_WEIGHT_KG;
+    weight += w * qty;
+    if (product.length) length = Math.max(length, parseFloat(product.length) || length);
+    if (product.breadth) breadth = Math.max(breadth, parseFloat(product.breadth) || breadth);
+    if (product.height) height = Math.max(height, parseFloat(product.height) || height);
+  });
+  return {
+    weight: Math.max(0.1, weight || DEFAULT_PRODUCT_WEIGHT_KG),
+    length: Math.max(1, length),
+    breadth: Math.max(1, breadth),
+    height: Math.max(1, height),
+  };
+};
+const getCartPackageForUser = async (userId) => {
+  if (!userId) return null;
+  try {
+    const cart = await Cart.findOne({
+      where: { userId },
+      include: [
+        {
+          model: CartItem,
+          as: 'items',
+          include: [
+            { model: Product, as: 'product' },
+            { model: ProductVariant, as: 'variant' },
+          ],
+        },
+      ],
+    });
+    if (!cart || !cart.items || cart.items.length === 0) return null;
+    return computePackageFromItems(cart.items);
+  } catch (_) {
+    return null;
+  }
 };
 const getEnabledShiprocketProvider = async () => {
   const provider = await Provider.findOne({
@@ -208,6 +162,15 @@ const getDefaultPickupLocation = async () => {
   });
   if (loc) return loc;
   return await PickupLocation.findOne({ where: { isActive: true } });
+};
+const getActivePickupLocations = async () => {
+  return await PickupLocation.findAll({
+    where: { isActive: true },
+    order: [
+      ['isDefault', 'DESC'],
+      ['name', 'ASC'],
+    ],
+  });
 };
 /**
  * Fetch rates from a single Shiprocket provider.
@@ -361,8 +324,71 @@ const getDelhiveryRates = async (provider, {
   return rates;
 };
 /**
+ * Store Pickup rates – always ₹0. One option per active pickup location
+ * so the customer can choose which store to collect from.
+ */
+const getStorePickupRates = async (provider) => {
+  const locations = await getActivePickupLocations();
+  if (!locations || locations.length === 0) {
+    return [
+      {
+        courierCompanyId: 'store-pickup',
+        courierName: provider.name || 'Store Pickup',
+        rate: 0,
+        estimatedDays: 0,
+        etd: 'Ready for pickup',
+        freightCharge: 0,
+        codCharges: 0,
+        isSurface: false,
+        rating: null,
+        providerId: provider.id,
+        providerKey: 'store_pickup',
+        providerName: provider.name || 'Store Pickup',
+        rawCourierId: 'store-pickup',
+        isStorePickup: true,
+        pickupLocationId: null,
+        pickupLocationName: null,
+        pickupLocationAddress: null,
+      },
+    ];
+  }
+  return locations.map((loc) => {
+    const addressParts = [
+      loc.streetAddress || loc.street_address,
+      loc.apartment,
+      loc.city,
+      loc.state,
+      loc.zipCode || loc.zip_code,
+      loc.country,
+    ]
+      .filter(Boolean)
+      .join(', ');
+    return {
+      courierCompanyId: `store-pickup-${loc.id}`,
+      courierName: `${provider.name || 'Store Pickup'} – ${loc.name}`,
+      rate: 0,
+      estimatedDays: 0,
+      etd: 'Ready for pickup',
+      freightCharge: 0,
+      codCharges: 0,
+      isSurface: false,
+      rating: null,
+      providerId: provider.id,
+      providerKey: 'store_pickup',
+      providerName: provider.name || 'Store Pickup',
+      rawCourierId: String(loc.id),
+      isStorePickup: true,
+      pickupLocationId: loc.id,
+      pickupLocationName: loc.name,
+      pickupLocationAddress: addressParts,
+      isDefaultPickup: !!loc.isDefault,
+    };
+  });
+};
+/**
  * Retrieve shipping rates from EVERY enabled shipment provider.
  * Returns combined, sorted list so the user can pick any option.
+ * Store Pickup (when enabled) always appears with rate ₹0.
  */
 const getShippingRates = async ({
   deliveryPincode,
@@ -374,13 +400,43 @@ const getShippingRates = async ({
   declaredValue = 0,
   userId = null,
 }) => {
-  if (!deliveryPincode || String(deliveryPincode).trim().length < 5) {
+  const enabledProviders = await Provider.findAll({
+    where: {
+      provider_type: 'shipment',
+      is_enabled: true,
+    },
+    order: [['createdAt', 'DESC']],
+  });
+  if (!enabledProviders || enabledProviders.length === 0) {
+    const err = new Error(
+      'No enabled shipment providers found. Please configure and enable a provider in Shipment Providers Setup.'
+    );
+    err.status = 400;
+    throw err;
+  }
+  const hasOnlyStorePickup = enabledProviders.every(
+    (p) => (p.provider_key || '').toLowerCase() === 'store_pickup'
+  );
+  // Delivery pincode is required only when at least one courier provider is enabled
+  if (
+    !hasOnlyStorePickup &&
+    (!deliveryPincode || String(deliveryPincode).trim().length < 5)
+  ) {
     const err = new Error('Valid delivery pincode is required');
     err.status = 400;
     throw err;
   }
+  let pickupPincode = null;
   const pickup = await getDefaultPickupLocation();
-  if (!pickup || !pickup.zipCode) {
+  if (pickup && (pickup.zipCode || pickup.zip_code)) {
+    pickupPincode = String(pickup.zipCode || pickup.zip_code).trim();
+  }
+  // Courier providers need a default pickup with pincode
+  const hasCourierProvider = enabledProviders.some((p) => {
+    const k = (p.provider_key || '').toLowerCase();
+    return k === 'shiprocket' || k === 'delhivery';
+  });
+  if (hasCourierProvider && !pickupPincode) {
     const err = new Error(
       'No default pickup location with pincode configured. Please set a default pickup location in Store Settings.'
     );
@@ -403,27 +459,16 @@ const getShippingRates = async ({
   const finalHeight = pkg
     ? pkg.height
     : Math.max(1, parseFloat(height) || DEFAULT_HEIGHT_CM);
-  const pickupPincode = String(pickup.zipCode).trim();
-  const enabledProviders = await Provider.findAll({
-    where: {
-      provider_type: 'shipment',
-      is_enabled: true,
-    },
-    order: [['createdAt', 'DESC']],
-  });
-  if (!enabledProviders || enabledProviders.length === 0) {
-    const err = new Error(
-      'No enabled shipment providers found. Please configure and enable a provider in Shipment Providers Setup.'
-    );
-    err.status = 400;
-    throw err;
-  }
   const allRates = [];
   const errors = [];
   for (const provider of enabledProviders) {
     const key = (provider.provider_key || '').toLowerCase();
     try {
-      if (key === 'shiprocket') {
+      if (key === 'store_pickup') {
+        const rates = await getStorePickupRates(provider);
+        allRates.push(...rates);
+      } else if (key === 'shiprocket') {
+        if (!pickupPincode || !deliveryPincode) continue;
         const rates = await getShiprocketRates(provider, {
           pickupPincode,
           deliveryPincode,
@@ -436,6 +481,7 @@ const getShippingRates = async ({
         });
         allRates.push(...rates);
       } else if (key === 'delhivery') {
+        if (!pickupPincode || !deliveryPincode) continue;
         const rates = await getDelhiveryRates(provider, {
           pickupPincode,
           deliveryPincode,
@@ -454,11 +500,20 @@ const getShippingRates = async ({
           : null) ||
         e.message ||
         `Failed to fetch rates from ${provider.name}`;
-      errors.push({ providerId: provider.id, providerName: provider.name, message: msg });
+      errors.push({
+        providerId: provider.id,
+        providerName: provider.name,
+        message: msg,
+      });
       console.error(`Rates error [${provider.name}]:`, msg);
     }
   }
-  allRates.sort((a, b) => a.rate - b.rate);
+  // Store pickup rates (₹0) first, then cheapest courier rates
+  allRates.sort((a, b) => {
+    if (a.isStorePickup && !b.isStorePickup) return -1;
+    if (!a.isStorePickup && b.isStorePickup) return 1;
+    return a.rate - b.rate;
+  });
   if (allRates.length === 0) {
     const detail =
       errors.length > 0
@@ -471,8 +526,10 @@ const getShippingRates = async ({
   const primaryProviderId = allRates[0]?.providerId || enabledProviders[0].id;
   return {
     rates: allRates,
-    pickupPincode,
-    deliveryPincode: String(deliveryPincode).trim(),
+    pickupPincode: pickupPincode || null,
+    deliveryPincode: deliveryPincode
+      ? String(deliveryPincode).trim()
+      : null,
     providerId: primaryProviderId,
     providerName: allRates[0]?.providerName || null,
     package: {
@@ -965,6 +1022,83 @@ const createDelhiveryOrder = async (order, orderItems, addrObj, selectedCourier 
   }
 };
 /**
+ * Store Pickup – no external courier call. Mark as ready for pickup.
+ */
+const createStorePickupOrder = async (order, orderItems, addrObj, selectedCourier = {}) => {
+  let provider = null;
+  if (selectedCourier.shipmentProviderId) {
+    try {
+      provider = await getProviderById(selectedCourier.shipmentProviderId);
+    } catch (_) {}
+  }
+  if (!provider) {
+    provider = await Provider.findOne({
+      where: {
+        provider_type: 'shipment',
+        provider_key: 'store_pickup',
+        is_enabled: true,
+      },
+      order: [['createdAt', 'DESC']],
+    });
+  }
+  if (!provider) {
+    const err = new Error(
+      'No enabled Store Pickup provider found. Please configure and enable it in Shipment Providers Setup.'
+    );
+    err.status = 400;
+    throw err;
+  }
+  let pickupLocationId = selectedCourier.pickupLocationId || null;
+  if (!pickupLocationId && selectedCourier.courierCompanyId) {
+    const m = String(selectedCourier.courierCompanyId).match(/^store-pickup-(\d+)$/);
+    if (m) pickupLocationId = parseInt(m[1], 10);
+  }
+  if (!pickupLocationId && selectedCourier.rawCourierId) {
+    const n = parseInt(selectedCourier.rawCourierId, 10);
+    if (!Number.isNaN(n)) pickupLocationId = n;
+  }
+  let pickupLoc = null;
+  if (pickupLocationId) {
+    pickupLoc = await PickupLocation.findByPk(pickupLocationId);
+  }
+  if (!pickupLoc) {
+    pickupLoc = await getDefaultPickupLocation();
+  }
+  const locationName = pickupLoc
+    ? pickupLoc.name
+    : selectedCourier.pickupLocationName || 'Store';
+  const addressParts = pickupLoc
+    ? [
+        pickupLoc.streetAddress || pickupLoc.street_address,
+        pickupLoc.apartment,
+        pickupLoc.city,
+        pickupLoc.state,
+        pickupLoc.zipCode || pickupLoc.zip_code,
+        pickupLoc.country,
+      ]
+        .filter(Boolean)
+        .join(', ')
+    : selectedCourier.pickupLocationAddress || '';
+  return {
+    shiprocketOrderId: null,
+    shiprocketShipmentId: null,
+    awbCode: null,
+    status: 'ready_for_pickup',
+    raw: {
+      type: 'store_pickup',
+      pickupLocationId: pickupLoc ? pickupLoc.id : null,
+      pickupLocationName: locationName,
+      pickupLocationAddress: addressParts,
+      message: `Order ready for pickup at ${locationName}`,
+    },
+    providerId: provider.id,
+    providerKey: 'store_pickup',
+    isStorePickup: true,
+    pickupLocationId: pickupLoc ? pickupLoc.id : null,
+    pickupLocationName: locationName,
+  };
+};
+/**
  * Generic create shipment – dispatches to the correct provider implementation.
  */
 const createShipmentOrder = async (order, orderItems, addrObj, selectedCourier = {}) => {
@@ -977,11 +1111,16 @@ const createShipmentOrder = async (order, orderItems, addrObj, selectedCourier =
   }
   if (!providerKey && selectedCourier.courierCompanyId) {
     const cid = String(selectedCourier.courierCompanyId);
-    if (cid.startsWith('delhivery-') || cid === 'S' || cid === 'E') {
+    if (cid.startsWith('store-pickup') || selectedCourier.isStorePickup) {
+      providerKey = 'store_pickup';
+    } else if (cid.startsWith('delhivery-') || cid === 'S' || cid === 'E') {
       providerKey = 'delhivery';
     } else {
       providerKey = 'shiprocket';
     }
+  }
+  if (!providerKey && selectedCourier.providerKey) {
+    providerKey = String(selectedCourier.providerKey).toLowerCase();
   }
   if (!providerKey) {
     try {
@@ -992,11 +1131,25 @@ const createShipmentOrder = async (order, orderItems, addrObj, selectedCourier =
         await getEnabledDelhiveryProvider();
         providerKey = 'delhivery';
       } catch (__) {
-        const err = new Error('No enabled shipment provider available');
-        err.status = 400;
-        throw err;
+        const storePickup = await Provider.findOne({
+          where: {
+            provider_type: 'shipment',
+            provider_key: 'store_pickup',
+            is_enabled: true,
+          },
+        });
+        if (storePickup) {
+          providerKey = 'store_pickup';
+        } else {
+          const err = new Error('No enabled shipment provider available');
+          err.status = 400;
+          throw err;
+        }
       }
     }
+  }
+  if (providerKey === 'store_pickup') {
+    return createStorePickupOrder(order, orderItems, addrObj, selectedCourier);
   }
   if (providerKey === 'delhivery') {
     return createDelhiveryOrder(order, orderItems, addrObj, selectedCourier);
@@ -1005,6 +1158,18 @@ const createShipmentOrder = async (order, orderItems, addrObj, selectedCourier =
 };
 const trackShipment = async (order) => {
   if (!order.awbCode && !order.shiprocketShipmentId && !order.shiprocketOrderId) {
+    // Store pickup has no external tracking
+    if (
+      order.shipmentStatus === 'ready_for_pickup' ||
+      (order.shipmentDetails && order.shipmentDetails.type === 'store_pickup')
+    ) {
+      return {
+        status: 'ready_for_pickup',
+        awbCode: null,
+        raw: order.shipmentDetails || { type: 'store_pickup' },
+        providerKey: 'store_pickup',
+      };
+    }
     const err = new Error('No AWB / shipment ID available to track');
     err.status = 400;
     throw err;
@@ -1016,6 +1181,14 @@ const trackShipment = async (order) => {
     } catch (_) {}
   }
   const key = (provider?.provider_key || '').toLowerCase();
+  if (key === 'store_pickup') {
+    return {
+      status: order.shipmentStatus || 'ready_for_pickup',
+      awbCode: null,
+      raw: order.shipmentDetails || { type: 'store_pickup' },
+      providerKey: 'store_pickup',
+    };
+  }
   if (key === 'delhivery' || (!key && order.awbCode && !order.shiprocketOrderId)) {
     const token = getDelhiveryToken(provider || (await getEnabledDelhiveryProvider()));
     const env = ((provider || {}).credentials?.environment || 'production').toLowerCase();
@@ -1086,6 +1259,16 @@ const trackShipment = async (order) => {
 };
 const cancelShipment = async (order) => {
   if (!order.shiprocketOrderId && !order.awbCode) {
+    if (
+      order.shipmentStatus === 'ready_for_pickup' ||
+      (order.shipmentDetails && order.shipmentDetails.type === 'store_pickup')
+    ) {
+      return {
+        success: true,
+        message: 'Store pickup order cancelled (no external shipment)',
+        raw: null,
+      };
+    }
     const err = new Error('No Shiprocket order/AWB to cancel');
     err.status = 400;
     throw err;
@@ -1094,6 +1277,13 @@ const cancelShipment = async (order) => {
     ? await getProviderById(order.shipmentProviderId)
     : await getEnabledShiprocketProvider();
   const key = (provider.provider_key || '').toLowerCase();
+  if (key === 'store_pickup') {
+    return {
+      success: true,
+      message: 'Store pickup order cancelled (no external shipment)',
+      raw: null,
+    };
+  }
   if (key === 'delhivery') {
     return {
       success: false,
@@ -1149,6 +1339,7 @@ module.exports = {
   getShippingRates,
   createShiprocketOrder,
   createDelhiveryOrder,
+  createStorePickupOrder,
   createShipmentOrder,
   trackShipment,
   cancelShipment,
@@ -1156,6 +1347,7 @@ module.exports = {
   getEnabledDelhiveryProvider,
   getEnabledShipmentProviders,
   getDefaultPickupLocation,
+  getActivePickupLocations,
   getShiprocketToken,
   getProviderById,
   parseShippingAddressText,
