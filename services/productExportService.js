@@ -147,6 +147,13 @@ class ProductExportService {
     };
     headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
     headerRow.height = 25;
+    // Freeze the first 4 columns (Row Type, Product SKU, Product Name, Variant SKU)
+    worksheet.views = [
+      {
+        state: 'frozen',
+        xSplit: 4, // number of columns to freeze from left
+      }
+    ];
     // Process each product
     for (const product of products) {
       const variants = product.variants || [];
