@@ -1,417 +1,589 @@
-const { Product, ProductVariant, ProductImage, Category, sequelize } = require('../models');
-const { Op } = require('sequelize');
-const ExcelJS = require('exceljs');
+const fs = require('fs');
 const path = require('path');
-const fs = require('fs-extra');
-const AdmZip = require('adm-zip');
-const cloudinary = require('cloudinary').v2;
+const os = require('os');
 const { v4: uuidv4 } = require('uuid');
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'your-cloud-name',
-  api_key: process.env.CLOUDINARY_API_KEY || '',
-  api_secret: process.env.CLOUDINARY_API_SECRET || '',
-});
-class ProductImportService {
-  sanitizeProductFolderName(productName, productSku) {
-    let name = productName.toLowerCase()
-      .replace(/[^a-z0-9\s-]/g, '')
-      .trim()
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '');
-    const sku = productSku.replace(/[^a-zA-Z0-9-]/g, '');
-    let folder = `${name}-${sku}`;
-    if (!name) folder = sku;
-    folder = folder.replace(/[^a-zA-Z0-9-]/g, '');
-    folder = folder.replace(/-+/g, '-').replace(/^-|-$/g, '');
-    return folder;
+const XLSX = require('xlsx');
+const AdmZip = require('adm-zip');
+const { Op } = require('sequelize');
+const {
+  Product,
+  ProductImage,
+  ProductVariant,
+  Category,
+  sequelize,
+} = require('../models');
+const { uploadFileToCloudinary } = require('../utils/cloudinary');
+
+function normalizeKey(key) {
+  return String(key || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+function getCell(row, possibleKeys) {
+  const map = {};
+  for (const k of Object.keys(row || {})) {
+    map[normalizeKey(k)] = row[k];
   }
-  sanitizeVariantFolderName(variantSku, color, size) {
-    const parts = [];
-    const sku = variantSku.replace(/[^a-zA-Z0-9-]/g, '');
-    parts.push(sku);
-    if (color && color.trim() !== '') {
-      const col = color.trim().toLowerCase().replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-').replace(/^-|-$/g, '');
-      if (col) parts.push(col);
+  for (const key of possibleKeys) {
+    const val = map[normalizeKey(key)];
+    if (val !== undefined && val !== null && String(val).trim() !== '') {
+      return val;
     }
-    if (size && size.trim() !== '') {
-      const sz = size.trim().toLowerCase().replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-').replace(/^-|-$/g, '');
-      if (sz) parts.push(sz);
-    }
-    return parts.join('-');
   }
-  extractZip(zipPath, destDir) {
-    const zip = new AdmZip(zipPath);
-    const entries = zip.getEntries();
-    for (const entry of entries) {
-      const entryName = entry.entryName;
-      if (entryName.includes('..') || path.isAbsolute(entryName)) {
-        throw new Error(`Unsafe ZIP entry: ${entryName}`);
+  return null;
+}
+
+function parseYesNo(val) {
+  if (val === true || val === 1) return true;
+  if (val === false || val === 0) return false;
+  const s = String(val || '').trim().toLowerCase();
+  return s === 'yes' || s === 'true' || s === '1';
+}
+
+function parseNumber(val, fallback = null) {
+  if (val === undefined || val === null || val === '') return fallback;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function splitMediaUrls(raw) {
+  if (!raw) return [];
+  return String(raw)
+    .split(/[;|]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Build index of all image files under extractDir for fast lookup */
+function buildMediaIndex(rootDir) {
+  const byRel = new Map(); // normalized relative path -> absolute path
+  const byBasename = new Map(); // basename -> [absolute paths]
+  const imageExt = /\.(jpe?g|png|webp|gif|bmp)$/i;
+
+  function walk(dir, relBase = '') {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      const rel = relBase ? `${relBase}/${ent.name}` : ent.name;
+      if (ent.isDirectory()) {
+        walk(full, rel);
+      } else if (ent.isFile() && imageExt.test(ent.name)) {
+        const norm = rel.replace(/\\/g, '/').toLowerCase();
+        byRel.set(norm, full);
+        // also without leading "images/"
+        if (norm.startsWith('images/')) {
+          byRel.set(norm.slice('images/'.length), full);
+        }
+        const base = ent.name.toLowerCase();
+        if (!byBasename.has(base)) byBasename.set(base, []);
+        byBasename.get(base).push(full);
       }
     }
-    zip.extractAllTo(destDir, true);
   }
-  findExcelFile(dir) {
-    const files = fs.readdirSync(dir);
-    for (const file of files) {
-      const fullPath = path.join(dir, file);
-      const stat = fs.statSync(fullPath);
-      if (stat.isDirectory()) {
-        const found = this.findExcelFile(fullPath);
-        if (found) return found;
-      } else if (file.match(/\.(xls|xlsx)$/i)) {
-        return fullPath;
-      }
+
+  walk(rootDir);
+  return { byRel, byBasename };
+}
+
+function resolveMediaPath(mediaIndex, relativePath) {
+  if (!relativePath) return null;
+  let rel = String(relativePath).trim().replace(/\\/g, '/');
+  if (rel.startsWith('/')) rel = rel.slice(1);
+  if (rel.startsWith('./')) rel = rel.slice(2);
+  const norm = rel.toLowerCase();
+
+  if (mediaIndex.byRel.has(norm)) return mediaIndex.byRel.get(norm);
+  if (mediaIndex.byRel.has('images/' + norm)) {
+    return mediaIndex.byRel.get('images/' + norm);
+  }
+
+  // Match by last 2–3 path segments
+  const parts = norm.split('/').filter(Boolean);
+  for (let n = Math.min(3, parts.length); n >= 2; n--) {
+    const suffix = parts.slice(-n).join('/');
+    for (const [key, full] of mediaIndex.byRel.entries()) {
+      if (key.endsWith(suffix) || key.endsWith('/' + suffix)) return full;
     }
+  }
+
+  // Basename fallback (only if unique)
+  const base = parts[parts.length - 1];
+  const candidates = mediaIndex.byBasename.get(base) || [];
+  if (candidates.length === 1) return candidates[0];
+
+  return null;
+}
+
+async function ensureCategory(categoryName, subcategoryName, transaction) {
+  let categoryId = null;
+  let subcategoryId = null;
+
+  if (categoryName) {
+    let cat = await Category.findOne({
+      where: { name: { [Op.iLike]: String(categoryName).trim() } },
+      transaction,
+    });
+    if (!cat) {
+      cat = await Category.create(
+        {
+          name: String(categoryName).trim(),
+          order: 0,
+          isActive: true,
+          showInCategoryGrid: true,
+          showInHero: false,
+        },
+        { transaction }
+      );
+    }
+    categoryId = cat.id;
+
+    if (subcategoryName) {
+      let sub = await Category.findOne({
+        where: {
+          name: { [Op.iLike]: String(subcategoryName).trim() },
+          parentId: categoryId,
+        },
+        transaction,
+      });
+      if (!sub) {
+        sub = await Category.findOne({
+          where: { name: { [Op.iLike]: String(subcategoryName).trim() } },
+          transaction,
+        });
+      }
+      if (!sub) {
+        sub = await Category.create(
+          {
+            name: String(subcategoryName).trim(),
+            parentId: categoryId,
+            order: 0,
+            isActive: true,
+            showInCategoryGrid: false,
+            showInHero: false,
+          },
+          { transaction }
+        );
+      }
+      subcategoryId = sub.id;
+    }
+  }
+
+  return { categoryId, subcategoryId };
+}
+
+async function uploadOneImage(localPath, folder, warnings) {
+  try {
+    const result = await uploadFileToCloudinary(localPath, {
+      resource_type: 'image',
+      folder,
+    });
+    return result;
+  } catch (err) {
+    const msg = `Cloudinary upload failed for ${path.basename(localPath)}: ${err.message}`;
+    warnings.push(msg);
+    console.error(msg, err);
     return null;
   }
-  async getOrCreateCategory(name, parentId = null) {
-    if (!name) return null;
-    const where = { name: name.trim() };
-    if (parentId) where.parentId = parentId;
-    else where.parentId = null;
-    let category = await Category.findOne({ where });
-    if (!category) {
-      category = await Category.create({
-        name: name.trim(),
-        parentId: parentId || null,
-        order: 0,
-        isActive: true,
-        showInCategoryGrid: true,
-        showInHero: false,
-      });
-    }
-    return category;
-  }
-  async uploadToCloudinary(filePath, resourceType = 'image') {
-    return new Promise((resolve, reject) => {
-      cloudinary.uploader.upload(filePath, {
-        resource_type: resourceType,
-        folder: 'products_import',
-      }, (error, result) => {
-        if (error) reject(error);
-        else resolve(result);
-      });
-    });
-  }
-  async processImport(file, importType, userId) {
-    const tempDir = path.join(__dirname, '../temp_import', uuidv4());
-    await fs.ensureDir(tempDir);
-    let excelPath = null;
-    let extractedDir = null;
-    const isZip = importType !== 'excel';
+}
+
+class ProductImportService {
+  async importFromFile({ filePath, originalName, importType = 'excel', userId }) {
+    const warnings = [];
+    let extractDir = null;
+    let excelPath = filePath;
+    let mediaIndex = null;
+
+    const isZip =
+      (originalName && originalName.toLowerCase().endsWith('.zip')) ||
+      (filePath && filePath.toLowerCase().endsWith('.zip'));
+
     try {
       if (isZip) {
-        const zipPath = path.join(tempDir, 'upload.zip');
-        await fs.move(file.path, zipPath, { overwrite: true });
-        const extractDir = path.join(tempDir, 'extracted');
-        await fs.ensureDir(extractDir);
-        this.extractZip(zipPath, extractDir);
-        extractedDir = extractDir;
+        extractDir = path.join(os.tmpdir(), `product-import-${uuidv4()}`);
+        fs.mkdirSync(extractDir, { recursive: true });
+
+        const zip = new AdmZip(filePath);
+        zip.extractAllTo(extractDir, true);
+
         excelPath = this.findExcelFile(extractDir);
         if (!excelPath) {
-          throw new Error('No Excel file (.xls or .xlsx) found in the ZIP');
+          throw new Error(
+            'ZIP must contain products.xls or products.xlsx'
+          );
         }
-      } else {
-        excelPath = file.path;
-        extractedDir = tempDir;
-      }
-      // Parse Excel
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(excelPath);
-      const worksheet = workbook.getWorksheet(1);
-      if (!worksheet) {
-        throw new Error('Excel file has no worksheet');
-      }
-      const headerRow = worksheet.getRow(1);
-      const headerMap = {};
-      headerRow.eachCell((cell, colNumber) => {
-        headerMap[colNumber] = String(cell.value).trim();
-      });
-      const colIndex = (name) => {
-        for (const [idx, val] of Object.entries(headerMap)) {
-          if (val === name) return parseInt(idx);
+
+        // Always index images if present in ZIP
+        mediaIndex = buildMediaIndex(extractDir);
+        const imageCount = mediaIndex.byRel.size;
+        console.log(`[import] Extracted ZIP. Excel: ${excelPath}, image files indexed: ${imageCount}`);
+        if (imageCount === 0) {
+          warnings.push(
+            'ZIP extracted but no image files (.jpg/.png/.webp) were found under images/'
+          );
         }
-        return -1;
-      };
-      const idxRowType = colIndex('Row Type');
-      const idxProductSku = colIndex('Product SKU');
-      const idxProductName = colIndex('Product Name');
-      const idxVariantSku = colIndex('Variant SKU');
-      const idxSize = colIndex('Size');
-      const idxColor = colIndex('Color');
-      const idxPrice = colIndex('Price');
-      const idxStock = colIndex('Stock');
-      const idxCategory = colIndex('Category');
-      const idxSubcategory = colIndex('Subcategory');
-      const idxShowFeatured = colIndex('Show In Featured Products (Yes/No)');
-      const idxShowBestSellers = colIndex('Show In Best Sellers (Yes/No)');
-      const idxShowNewArrivals = colIndex('Show In New Arrivals (Yes/No)');
-      const idxShowPremium = colIndex('Show In Premium Products (Yes/No)');
-      const idxWeight = colIndex('Weight');
-      const idxLength = colIndex('Length');
-      const idxBreadth = colIndex('Breadth');
-      const idxHeight = colIndex('Height');
-      const idxImageUrls = colIndex('Image URLs');
-      const idxVideoUrls = colIndex('Video URLs');
-      if (idxRowType === -1 || idxProductSku === -1) {
-        throw new Error('Excel missing required columns: Row Type, Product SKU');
+      } else if (
+        importType === 'excel_images' ||
+        importType === 'excel_images_videos'
+      ) {
+        warnings.push(
+          'Images requested but file is not a ZIP. Only Excel data imported.'
+        );
       }
-      const includeImages = importType === 'excel_images' || importType === 'excel_images_videos';
-      const includeVideos = importType === 'excel_videos' || importType === 'excel_images_videos';
-      let importedProducts = 0, updatedProducts = 0;
-      let importedVariants = 0, updatedVariants = 0;
-      let importedImages = 0, importedVideos = 0;
-      const warnings = [];
-      // We'll store rows first to process sequentially with awaits
-      const rows = [];
-      worksheet.eachRow((row, rowNumber) => {
-        if (rowNumber === 1) return;
-        const getCell = (idx) => {
-          const cell = row.getCell(idx);
-          return cell.value !== undefined && cell.value !== null ? String(cell.value).trim() : '';
-        };
-        rows.push({
-          rowNumber,
-          rowType: getCell(idxRowType),
-          productSku: getCell(idxProductSku),
-          productName: getCell(idxProductName),
-          variantSku: getCell(idxVariantSku),
-          size: getCell(idxSize),
-          color: getCell(idxColor),
-          price: parseFloat(getCell(idxPrice)) || null,
-          stock: parseInt(getCell(idxStock)) || 0,
-          category: getCell(idxCategory),
-          subcategory: getCell(idxSubcategory),
-          showFeatured: getCell(idxShowFeatured).toLowerCase() === 'yes',
-          showBestSellers: getCell(idxShowBestSellers).toLowerCase() === 'yes',
-          showNewArrivals: getCell(idxShowNewArrivals).toLowerCase() === 'yes',
-          showPremium: getCell(idxShowPremium).toLowerCase() === 'yes',
-          weight: parseFloat(getCell(idxWeight)) || null,
-          length: parseFloat(getCell(idxLength)) || null,
-          breadth: parseFloat(getCell(idxBreadth)) || null,
-          height: parseFloat(getCell(idxHeight)) || null,
-        });
-      });
-      let currentProduct = null;
-      let currentProductSku = null;
-      let productName = '';
+
+      // Process images whenever we have media in the ZIP
+      // (do not rely only on importType — UI may send "excel" with a ZIP)
+      const processImages = !!mediaIndex && mediaIndex.byRel.size > 0;
+
+      if (isZip && !processImages) {
+        warnings.push(
+          'No processable images in ZIP. Check that paths in Image URLs match files inside the ZIP.'
+        );
+      }
+
+      const workbook = XLSX.readFile(excelPath);
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+      if (!rows.length) {
+        throw new Error('Excel file has no data rows');
+      }
+
+      // Log headers for debugging
+      console.log('[import] Excel headers:', Object.keys(rows[0] || {}));
+
+      const groups = new Map();
       for (const row of rows) {
-        if (row.rowType === 'Product') {
-          if (!row.productSku) {
-            warnings.push(`Row ${row.rowNumber}: Product SKU missing, skipping`);
-            continue;
-          }
-          const sku = row.productSku;
-          const name = row.productName || sku;
-          const price = row.price;
-          const categoryName = row.category;
-          const subcategoryName = row.subcategory;
-          const weight = row.weight;
-          const length = row.length;
-          const breadth = row.breadth;
-          const height = row.height;
-          const showFeatured = row.showFeatured;
-          const showBestSellers = row.showBestSellers;
-          const showNewArrivals = row.showNewArrivals;
-          const showPremium = row.showPremium;
-          let categoryId = null, subcategoryId = null;
-          if (categoryName) {
-            const cat = await this.getOrCreateCategory(categoryName);
-            categoryId = cat.id;
-            if (subcategoryName) {
-              const sub = await this.getOrCreateCategory(subcategoryName, cat.id);
-              subcategoryId = sub.id;
-            }
-          }
-          let product = await Product.findOne({ where: { defaultSku: sku } });
-          if (product) {
-            await product.update({
-              name: name || product.name,
-              basePrice: price !== null ? price : product.basePrice,
-              categoryId: categoryId !== null ? categoryId : product.categoryId,
-              subcategoryId: subcategoryId !== null ? subcategoryId : product.subcategoryId,
-              weight: weight !== null ? weight : product.weight,
-              length: length !== null ? length : product.length,
-              breadth: breadth !== null ? breadth : product.breadth,
-              height: height !== null ? height : product.height,
-              showInFeaturedProducts: showFeatured,
-              showInBestSellers: showBestSellers,
-              showInNewArrivals: showNewArrivals,
-              showInPremiumProducts: showPremium,
-              isActive: true,
-            });
-            updatedProducts++;
-          } else {
-            product = await Product.create({
-              defaultSku: sku,
-              name: name,
-              basePrice: price,
-              categoryId: categoryId,
-              subcategoryId: subcategoryId,
-              weight: weight || 0.5,
-              length: length || 30,
-              breadth: breadth || 25,
-              height: height || 5,
-              showInFeaturedProducts: showFeatured,
-              showInBestSellers: showBestSellers,
-              showInNewArrivals: showNewArrivals,
-              showInPremiumProducts: showPremium,
-              isActive: true,
-              userId: userId,
-            });
-            importedProducts++;
-          }
-          currentProduct = product;
-          currentProductSku = sku;
-          productName = product.name || sku;
-          // Process product media if ZIP and include options
-          if (isZip && (includeImages || includeVideos) && extractedDir) {
-            const productFolder = this.sanitizeProductFolderName(productName, currentProductSku);
-            const productDir = path.join(extractedDir, 'images', productFolder);
-            // Product images
-            if (includeImages) {
-              const imgDir = path.join(productDir, 'product');
-              if (fs.existsSync(imgDir)) {
-                const files = fs.readdirSync(imgDir).filter(f => /\.(jpg|jpeg|png|webp|gif)$/i.test(f));
-                for (const file of files) {
-                  const position = parseInt(file.split('.')[0]) || 0;
-                  if (position > 0) {
-                    const filePath = path.join(imgDir, file);
-                    try {
-                      const result = await this.uploadToCloudinary(filePath, 'image');
-                      await ProductImage.create({
-                        productId: product.id,
-                        url: result.secure_url,
-                        position: position,
-                        variantId: null,
-                      });
-                      importedImages++;
-                    } catch (err) {
-                      warnings.push(`Failed to upload image ${file} for product ${sku}: ${err.message}`);
-                    }
-                  }
-                }
-              }
-            }
-            // Product videos
-            if (includeVideos) {
-              const videoDir = path.join(productDir, 'videos');
-              if (fs.existsSync(videoDir)) {
-                const files = fs.readdirSync(videoDir).filter(f => /\.(mp4|mov|webm|m4v)$/i.test(f));
-                for (const file of files) {
-                  const position = parseInt(file.split('.')[0]) || 0;
-                  if (position > 0) {
-                    const filePath = path.join(videoDir, file);
-                    try {
-                      const result = await this.uploadToCloudinary(filePath, 'video');
-                      await product.update({
-                        cloudinaryVideoPublicId: result.public_id,
-                        videoUrl: result.secure_url,
-                      });
-                      importedVideos++;
-                    } catch (err) {
-                      warnings.push(`Failed to upload video ${file} for product ${sku}: ${err.message}`);
-                    }
-                  }
-                }
-              }
-            }
-          }
-        } else if (row.rowType === 'Variant') {
-          if (!currentProduct) {
-            warnings.push(`Row ${row.rowNumber}: Variant without parent product, skipping`);
-            continue;
-          }
-          const variantSku = row.variantSku;
-          if (!variantSku) {
-            warnings.push(`Row ${row.rowNumber}: Variant SKU missing, skipping`);
-            continue;
-          }
-          const size = row.size || '';
-          const color = row.color || '';
-          const price = row.price || 0;
-          const stock = row.stock || 0;
-          let variant = await ProductVariant.findOne({
-            where: { sku: variantSku, productId: currentProduct.id }
-          });
-          if (variant) {
-            await variant.update({
-              size: size || variant.size,
-              color: color || variant.color,
-              price: price,
-              stockQuantity: stock,
-            });
-            updatedVariants++;
-          } else {
-            variant = await ProductVariant.create({
-              productId: currentProduct.id,
-              sku: variantSku,
-              size: size,
-              color: color,
-              price: price,
-              stockQuantity: stock,
-            });
-            importedVariants++;
-          }
-          // Variant media
-          if (isZip && (includeImages || includeVideos) && extractedDir) {
-            const productFolder = this.sanitizeProductFolderName(productName, currentProductSku);
-            const variantFolder = this.sanitizeVariantFolderName(variantSku, color, size);
-            const variantDir = path.join(extractedDir, 'images', productFolder, 'variants', variantFolder);
-            if (fs.existsSync(variantDir)) {
-              // Images
-              if (includeImages) {
-                const imgFiles = fs.readdirSync(variantDir).filter(f => /\.(jpg|jpeg|png|webp|gif)$/i.test(f));
-                for (const file of imgFiles) {
-                  const position = parseInt(file.split('.')[0]) || 0;
-                  if (position > 0) {
-                    const filePath = path.join(variantDir, file);
-                    try {
-                      const result = await this.uploadToCloudinary(filePath, 'image');
-                      await ProductImage.create({
-                        productId: currentProduct.id,
-                        variantId: variant.id,
-                        url: result.secure_url,
-                        position: position,
-                      });
-                      importedImages++;
-                    } catch (err) {
-                      warnings.push(`Failed to upload variant image ${file} for variant ${variantSku}: ${err.message}`);
-                    }
-                  }
-                }
-              }
-              // Videos
-              if (includeVideos) {
-                const videoDir = path.join(variantDir, 'videos');
-                if (fs.existsSync(videoDir)) {
-                  const videoFiles = fs.readdirSync(videoDir).filter(f => /\.(mp4|mov|webm|m4v)$/i.test(f));
-                  for (const file of videoFiles) {
-                    const position = parseInt(file.split('.')[0]) || 0;
-                    if (position > 0) {
-                      const filePath = path.join(videoDir, file);
-                      try {
-                        const result = await this.uploadToCloudinary(filePath, 'video');
-                        await variant.update({
-                          cloudinaryVideoPublicId: result.public_id,
-                          videoUrl: result.secure_url,
-                        });
-                        importedVideos++;
-                      } catch (err) {
-                        warnings.push(`Failed to upload variant video ${file} for variant ${variantSku}: ${err.message}`);
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
+        const rowType = String(
+          getCell(row, ['Row Type', 'rowtype', 'type']) || ''
+        )
+          .trim()
+          .toLowerCase();
+        const productSku = String(
+          getCell(row, ['Product SKU', 'ProductSKU', 'SKU', 'defaultSku']) ||
+            ''
+        ).trim();
+        if (!productSku) continue;
+
+        if (!groups.has(productSku)) {
+          groups.set(productSku, { productRow: null, variantRows: [] });
+        }
+        const g = groups.get(productSku);
+
+        if (rowType === 'product') {
+          g.productRow = row;
+        } else if (rowType === 'variant') {
+          g.variantRows.push(row);
+        } else if (!g.productRow && getCell(row, ['Product Name', 'name'])) {
+          g.productRow = row;
+        } else {
+          g.variantRows.push(row);
         }
       }
-      // Cleanup
-      await fs.remove(tempDir);
+
+      let importedProducts = 0;
+      let updatedProducts = 0;
+      let importedVariants = 0;
+      let updatedVariants = 0;
+      let importedImages = 0;
+      let importedVideos = 0;
+
+      for (const [productSku, group] of groups.entries()) {
+        const transaction = await sequelize.transaction();
+        try {
+          const prow = group.productRow || group.variantRows[0];
+          if (!prow) {
+            await transaction.rollback();
+            continue;
+          }
+
+          const name =
+            String(getCell(prow, ['Product Name', 'name']) || productSku).trim() ||
+            productSku;
+          const basePrice = parseNumber(
+            getCell(prow, ['Price', 'basePrice', 'Base Price']),
+            0
+          );
+          const categoryName = getCell(prow, ['Category']);
+          const subcategoryName = getCell(prow, ['Subcategory']);
+          const { categoryId, subcategoryId } = await ensureCategory(
+            categoryName,
+            subcategoryName,
+            transaction
+          );
+
+          const productPayload = {
+            name,
+            description: getCell(prow, ['Description']) || null,
+            basePrice,
+            defaultSku: productSku,
+            categoryId,
+            subcategoryId,
+            userId,
+            isActive: true,
+            stockQuantity:
+              parseNumber(getCell(prow, ['Stock', 'stockQuantity']), 0) || 0,
+            showInFeaturedProducts: parseYesNo(
+              getCell(prow, [
+                'Show In Featured Products (Yes/No)',
+                'Show In Featured Products',
+                'showInFeaturedProducts',
+              ])
+            ),
+            showInBestSellers: parseYesNo(
+              getCell(prow, [
+                'Show In Best Sellers (Yes/No)',
+                'Show In Best Sellers',
+                'showInBestSellers',
+              ])
+            ),
+            showInNewArrivals: parseYesNo(
+              getCell(prow, [
+                'Show In New Arrivals (Yes/No)',
+                'Show In New Arrivals',
+                'showInNewArrivals',
+              ])
+            ),
+            showInPremiumProducts: parseYesNo(
+              getCell(prow, [
+                'Show In Premium Products (Yes/No)',
+                'Show In Premium Products',
+                'showInPremiumProducts',
+              ])
+            ),
+            weight: parseNumber(getCell(prow, ['Weight']), 0) || 0,
+            length: parseNumber(getCell(prow, ['Length']), 0) || 0,
+            breadth: parseNumber(getCell(prow, ['Breadth']), 0) || 0,
+            height: parseNumber(getCell(prow, ['Height']), 0) || 0,
+          };
+
+          const productVideoRaw = getCell(prow, [
+            'Video URLs',
+            'Video URL',
+            'videoUrl',
+          ]);
+          if (productVideoRaw && String(productVideoRaw).startsWith('http')) {
+            productPayload.videoUrl = String(productVideoRaw)
+              .split(/[;|]/)[0]
+              .trim();
+          }
+
+          let product = await Product.findOne({
+            where: { defaultSku: productSku, userId },
+            transaction,
+          });
+
+          if (product) {
+            await product.update(productPayload, { transaction });
+            updatedProducts += 1;
+          } else {
+            product = await Product.create(
+              { ...productPayload, id: uuidv4() },
+              { transaction }
+            );
+            importedProducts += 1;
+          }
+
+          // ---------- Product-level images ----------
+          if (processImages) {
+            // Replace existing product-level images on re-import
+            await ProductImage.destroy({
+              where: { productId: product.id, variantId: null },
+              transaction,
+            });
+
+            const imageRaws = splitMediaUrls(
+              getCell(prow, [
+                'Image URLs',
+                'Image URL',
+                'Product Image URLs',
+              ])
+            );
+
+            console.log(
+              `[import] ${productSku} product Image URLs count: ${imageRaws.length}`
+            );
+
+            if (imageRaws.length === 0) {
+              warnings.push(
+                `No Image URLs on product row for ${productSku}`
+              );
+            }
+
+            let position = 0;
+            for (const rel of imageRaws) {
+              if (/^https?:\/\//i.test(rel)) {
+                await ProductImage.create(
+                  {
+                    id: uuidv4(),
+                    productId: product.id,
+                    variantId: null,
+                    url: rel,
+                    position: position++,
+                  },
+                  { transaction }
+                );
+                importedImages += 1;
+                continue;
+              }
+
+              const local = resolveMediaPath(mediaIndex, rel);
+              if (!local) {
+                warnings.push(
+                  `Product image not found in ZIP for ${productSku}: ${rel}`
+                );
+                continue;
+              }
+
+              const uploaded = await uploadOneImage(
+                local,
+                `products/${productSku}`,
+                warnings
+              );
+              if (!uploaded) continue;
+
+              await ProductImage.create(
+                {
+                  id: uuidv4(),
+                  productId: product.id,
+                  variantId: null,
+                  url: uploaded.url,
+                  position: position++,
+                },
+                { transaction }
+              );
+              importedImages += 1;
+            }
+          }
+
+          // ---------- Variants ----------
+          for (const vrow of group.variantRows) {
+            const variantSku = String(
+              getCell(vrow, ['Variant SKU', 'VariantSKU', 'sku']) || ''
+            ).trim();
+            if (!variantSku) continue;
+
+            const variantPayload = {
+              sku: variantSku,
+              size: getCell(vrow, ['Size']) || null,
+              color: getCell(vrow, ['Color']) || null,
+              price: parseNumber(
+                getCell(vrow, ['Price']),
+                product.basePrice || 0
+              ),
+              stockQuantity: parseNumber(
+                getCell(vrow, ['Stock', 'stockQuantity']),
+                0
+              ),
+              productId: product.id,
+            };
+
+            const vVideo = getCell(vrow, [
+              'Video URLs',
+              'Video URL',
+              'videoUrl',
+            ]);
+            if (vVideo && String(vVideo).startsWith('http')) {
+              variantPayload.videoUrl = String(vVideo)
+                .split(/[;|]/)[0]
+                .trim();
+            }
+
+            let variant = await ProductVariant.findOne({
+              where: { sku: variantSku, productId: product.id },
+              transaction,
+            });
+
+            if (variant) {
+              await variant.update(variantPayload, { transaction });
+              updatedVariants += 1;
+            } else {
+              variant = await ProductVariant.create(
+                { ...variantPayload, id: uuidv4() },
+                { transaction }
+              );
+              importedVariants += 1;
+            }
+
+            if (processImages) {
+              await ProductImage.destroy({
+                where: {
+                  productId: product.id,
+                  variantId: variant.id,
+                },
+                transaction,
+              });
+
+              const vImageRaws = splitMediaUrls(
+                getCell(vrow, ['Image URLs', 'Image URL'])
+              );
+
+              let vPos = 0;
+              for (const rel of vImageRaws) {
+                if (/^https?:\/\//i.test(rel)) {
+                  await ProductImage.create(
+                    {
+                      id: uuidv4(),
+                      productId: product.id,
+                      variantId: variant.id,
+                      url: rel,
+                      position: vPos++,
+                    },
+                    { transaction }
+                  );
+                  importedImages += 1;
+                  continue;
+                }
+
+                const local = resolveMediaPath(mediaIndex, rel);
+                if (!local) {
+                  warnings.push(
+                    `Variant image not found in ZIP for ${variantSku}: ${rel}`
+                  );
+                  continue;
+                }
+
+                const uploaded = await uploadOneImage(
+                  local,
+                  `products/${productSku}/variants/${variantSku}`,
+                  warnings
+                );
+                if (!uploaded) continue;
+
+                await ProductImage.create(
+                  {
+                    id: uuidv4(),
+                    productId: product.id,
+                    variantId: variant.id,
+                    url: uploaded.url,
+                    position: vPos++,
+                  },
+                  { transaction }
+                );
+                importedImages += 1;
+              }
+            }
+          }
+
+          await transaction.commit();
+        } catch (err) {
+          await transaction.rollback();
+          warnings.push(
+            `Failed to import product ${productSku}: ${err.message}`
+          );
+          console.error(`Import error for ${productSku}:`, err);
+        }
+      }
+
       return {
+        success: true,
         importedProducts,
         updatedProducts,
         importedVariants,
@@ -419,11 +591,64 @@ class ProductImportService {
         importedImages,
         importedVideos,
         warnings,
+        debug: {
+          processImages,
+          mediaFilesIndexed: mediaIndex ? mediaIndex.byRel.size : 0,
+          isZip: !!isZip,
+          importType,
+        },
       };
-    } catch (error) {
-      await fs.remove(tempDir);
-      throw error;
+    } finally {
+      if (extractDir && fs.existsSync(extractDir)) {
+        try {
+          fs.rmSync(extractDir, { recursive: true, force: true });
+        } catch (e) {
+          console.warn('Failed to cleanup extract dir:', e.message);
+        }
+      }
     }
   }
+
+  findExcelFile(rootDir) {
+    const preferred = [
+      'products.xls',
+      'products.xlsx',
+      'Products.xls',
+      'Products.xlsx',
+    ];
+    for (const name of preferred) {
+      const p = path.join(rootDir, name);
+      if (fs.existsSync(p)) return p;
+    }
+    let found = null;
+    function walk(dir) {
+      if (found) return;
+      let entries;
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const ent of entries) {
+        const full = path.join(dir, ent.name);
+        if (ent.isDirectory()) walk(full);
+        else if (/\.xlsx?$/i.test(ent.name) && /product/i.test(ent.name)) {
+          found = full;
+          return;
+        }
+      }
+      if (!found) {
+        for (const ent of entries) {
+          if (!ent.isDirectory() && /\.xlsx?$/i.test(ent.name)) {
+            found = path.join(dir, ent.name);
+            return;
+          }
+        }
+      }
+    }
+    walk(rootDir);
+    return found;
+  }
 }
+
 module.exports = new ProductImportService();

@@ -1,47 +1,54 @@
 const express = require('express');
-const router = express.Router();
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs-extra');
+const fs = require('fs');
+const os = require('os');
 const productImportController = require('../controllers/productImportController');
-const jwt = require('jsonwebtoken');
-const JWT_SECRET = process.env.JWT_SECRET || 'default-secret';
-const uploadDir = path.join(__dirname, '../uploads/imports');
-fs.ensureDirSync(uploadDir);
+const authMiddleware = require('../middleware/authMiddleware');
+
+const router = express.Router();
+
+const uploadDir = path.join(os.tmpdir(), 'product-imports');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
+  destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, 'import-' + uniqueSuffix + path.extname(file.originalname));
-  }
+    const safe = String(file.originalname || 'upload')
+      .replace(/[^a-zA-Z0-9._-]/g, '_');
+    cb(null, `${Date.now()}-${safe}`);
+  },
 });
+
 const upload = multer({
-  storage: storage,
-  limits: { fileSize: 500 * 1024 * 1024 },
+  storage,
+  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB
   fileFilter: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    if (['.xls', '.xlsx', '.zip'].includes(ext)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only .xls, .xlsx, or .zip files are allowed'));
+    const name = (file.originalname || '').toLowerCase();
+    const ok =
+      name.endsWith('.xls') ||
+      name.endsWith('.xlsx') ||
+      name.endsWith('.zip');
+    if (!ok) {
+      return cb(new Error('Only .xls, .xlsx or .zip files are allowed'));
     }
-  }
+    cb(null, true);
+  },
 });
-const verifyToken = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) {
-    return res.status(401).json({ success: false, message: 'No token provided' });
-  }
-  const token = authHeader.split(' ')[1];
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch (err) {
-    return res.status(401).json({ success: false, message: 'Invalid token' });
-  }
-};
-router.post('/products/import', verifyToken, upload.single('file'), productImportController.importProducts);
+
+/**
+ * POST /api/products/import
+ * multipart form-data:
+ *   - file: Excel or ZIP
+ *   - importType: excel | excel_images | excel_videos | excel_images_videos
+ */
+router.post(
+  '/products/import',
+  authMiddleware,
+  upload.single('file'),
+  (req, res, next) => productImportController.importProducts(req, res, next)
+);
+
 module.exports = router;
