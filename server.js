@@ -4,9 +4,6 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const app = express();
-// ==========================================
-// CORS CONFIGURATION
-// ==========================================
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
@@ -65,28 +62,23 @@ app.get('/health', (req, res) => {
     environment: process.env.NODE_ENV || 'development',
   });
 });
-// ==========================================
-// API ROUTES
-// ==========================================
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/help-us', require('./routes/helpUsRoutes'));
 app.use('/api/providers', require('./routes/providerRoutes'));
-app.use('/api/social', require('./routes/socialRoutes'));  // NEW
+app.use('/api/social', require('./routes/socialRoutes'));
 app.use('/api/categories', require('./routes/categoryRoutes'));
 app.use('/api/store', require('./routes/storeRoutes'));
 app.use('/api/store-settings', require('./routes/storeSettingsRoutes'));
 app.use('/api/cart', require('./routes/cartRoutes'));
-app.use('/api', require('./routes/productExportRoutes'));  // NEW - product export route (must be before productRoutes)
+app.use('/api', require('./routes/productExportRoutes'));
 app.use('/api', require('./routes/productRoutes'));
+app.use('/api', require('./routes/productImportRoutes'));
 app.use('/api/instagram', require('./routes/instagramRoutes'));
 app.use('/api/orders', require('./routes/orderRoutes'));
 app.use('/api/user-voices', require('./routes/userVoiceRoutes'));
 app.use('/api/user', require('./routes/userRoutes'));
 app.use('/api/addresses', require('./routes/addressRoutes'));
 app.use('/api/pickup-locations', require('./routes/pickupLocationRoutes'));
-// ==========================================
-// SWAGGER UI
-// ==========================================
 app.get('/api-docs', (req, res) => {
   const indexPath = path.join(__dirname, 'public', 'api-docs', 'index.html');
   if (fs.existsSync(indexPath)) {
