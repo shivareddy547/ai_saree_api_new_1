@@ -76,6 +76,7 @@ app.use('/api/categories', require('./routes/categoryRoutes'));
 app.use('/api/store', require('./routes/storeRoutes'));
 app.use('/api/store-settings', require('./routes/storeSettingsRoutes'));
 app.use('/api/cart', require('./routes/cartRoutes'));
+app.use('/api', require('./routes/productExportRoutes'));  // NEW - product export route (must be before productRoutes)
 app.use('/api', require('./routes/productRoutes'));
 app.use('/api/instagram', require('./routes/instagramRoutes'));
 app.use('/api/orders', require('./routes/orderRoutes'));

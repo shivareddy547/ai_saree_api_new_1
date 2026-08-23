@@ -6,6 +6,11 @@ module.exports = (sequelize) => {
         foreignKey: 'productId',
         as: 'product'
       });
+      // Association to ProductImage with alias 'images' to match existing queries
+      ProductVariant.hasMany(models.ProductImage, {
+        foreignKey: 'variantId',
+        as: 'images'
+      });
     }
   }
   ProductVariant.init({
