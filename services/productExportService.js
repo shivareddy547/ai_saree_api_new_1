@@ -1,9 +1,9 @@
-const { Product, ProductVariant, ProductImage, sequelize } = require('../models');
+const { Product, ProductVariant, ProductImage, Category, sequelize } = require('../models');
 const { Op } = require('sequelize');
 const ExcelJS = require('exceljs');
 const path = require('path');
 class ProductExportService {
-  // Helper: extract filenames from a list of URLs (or comma-separated string)
+  // Helper: extract filenames from a list of URLs
   getFilenamesFromUrls(urls) {
     if (!urls) return '';
     const urlArray = Array.isArray(urls) ? urls : urls.split(',').map(u => u.trim());
@@ -30,7 +30,7 @@ class ProductExportService {
         { defaultSku: { [Op.iLike]: `%${search}%` } }
       ];
     }
-    // Fetch products with variants and product-level images (variantId null)
+    // Fetch products with variants, product-level images, category, and subcategory
     const products = await Product.findAll({
       where,
       include: [
@@ -46,6 +46,18 @@ class ProductExportService {
           required: false,
           where: { variantId: null },
           order: [['position', 'ASC']]
+        },
+        {
+          model: Category,
+          as: 'category',
+          attributes: ['id', 'name'],
+          required: false
+        },
+        {
+          model: Category,
+          as: 'subcategory',
+          attributes: ['id', 'name'],
+          required: false
         }
       ],
       order: [['createdAt', 'DESC']]
@@ -71,30 +83,6 @@ class ProductExportService {
           variantImagesMap[img.variantId] = [];
         }
         variantImagesMap[img.variantId].push(img.url);
-      });
-    }
-    // Get product IDs to fetch category and subcategory names via raw SQL
-    const productIds = products.map(p => p.id);
-    let categoryMap = {}; // for main category name
-    let subcategoryMap = {}; // for subcategory name
-    if (productIds.length > 0) {
-      const categoryRows = await sequelize.query(
-        `SELECT 
-           p.id AS productId, 
-           c_main.name AS categoryName,
-           c_sub.name AS subcategoryName
-         FROM products p
-         LEFT JOIN categories c_main ON p."categoryId" = c_main.id
-         LEFT JOIN categories c_sub ON p."subcategoryId" = c_sub.id
-         WHERE p.id IN (:productIds)`,
-        {
-          replacements: { productIds },
-          type: sequelize.QueryTypes.SELECT
-        }
-      );
-      categoryRows.forEach(row => {
-        categoryMap[row.productId] = row.categoryName || '';
-        subcategoryMap[row.productId] = row.subcategoryName || '';
       });
     }
     // Helper to format boolean to Yes/No
@@ -126,7 +114,7 @@ class ProductExportService {
     // Create workbook and worksheet
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Products');
-    // Define columns (22 columns: added Category and Subcategory)
+    // Define columns (22 columns: Category and Subcategory)
     worksheet.columns = [
       { header: 'Row Type', key: 'rowType', width: 15 },
       { header: 'Product SKU', key: 'productSku', width: 20 },
@@ -162,8 +150,8 @@ class ProductExportService {
     // Process each product
     for (const product of products) {
       const variants = product.variants || [];
-      const categoryName = categoryMap[product.id] || '';
-      const subcategoryName = subcategoryMap[product.id] || '';
+      const categoryName = product.category ? product.category.name : '';
+      const subcategoryName = product.subcategory ? product.subcategory.name : '';
       // Product-level image URLs (product images) - get filenames only
       const productImageUrls = (product.images || []).map(img => img.url);
       const productImageFilenames = this.getFilenamesFromUrls(productImageUrls);
