@@ -1,7 +1,6 @@
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 
-// Support both backend names and REACT_APP_ names from the same .env
 const cloudName =
   process.env.CLOUDINARY_CLOUD_NAME ||
   process.env.REACT_APP_CLOUDINARY_CLOUD_NAME ||
@@ -37,16 +36,13 @@ cloudinary.config({
   secure: true,
 });
 
-/**
- * Upload a local file to Cloudinary (signed upload with api_key/secret).
- */
 async function uploadFileToCloudinary(filePath, options = {}) {
   if (!filePath || !fs.existsSync(filePath)) {
     throw new Error(`File not found for Cloudinary upload: ${filePath}`);
   }
   if (!apiKey || !apiSecret) {
     throw new Error(
-      'Cloudinary credentials missing. Set REACT_APP_CLOUDINARY_API_KEY and REACT_APP_CLOUDINARY_API_SECRET in .env (or CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET)'
+      'Cloudinary credentials missing. Set REACT_APP_CLOUDINARY_API_KEY and REACT_APP_CLOUDINARY_API_SECRET in .env'
     );
   }
 

@@ -1,45 +1,53 @@
 const express = require('express');
-const router = express.Router();
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const storeSettingsController = require('../controllers/storeSettingsController');
-const uploadDir = path.join(__dirname, '..', 'uploads', 'store');
+const authMiddleware = require('../middleware/authMiddleware');
+
+const router = express.Router();
+
+const uploadDir = path.join(os.tmpdir(), 'store-settings-uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
+
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
+  destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    const ext = path.extname(file.originalname) || '.png';
-    cb(null, `${file.fieldname}-${uniqueSuffix}${ext}`);
+    const safe = String(file.originalname || 'upload').replace(
+      /[^a-zA-Z0-9._-]/g,
+      '_'
+    );
+    cb(null, `${Date.now()}-${file.fieldname}-${safe}`);
   },
 });
-const fileFilter = (req, file, cb) => {
-  const allowed = /jpeg|jpg|png|gif|webp|ico|svg/;
-  const ext = allowed.test(path.extname(file.originalname).toLowerCase());
-  const mime = allowed.test(file.mimetype) || file.mimetype === 'image/x-icon' || file.mimetype === 'image/vnd.microsoft.icon';
-  if (ext || mime) {
-    cb(null, true);
-  } else {
-    cb(new Error('Only image files are allowed (jpeg, jpg, png, gif, webp, ico, svg)'));
-  }
-};
+
 const upload = multer({
   storage,
-  fileFilter,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (req, file, cb) => {
+    const ok = /^image\//i.test(file.mimetype);
+    if (!ok) {
+      return cb(new Error('Only image files are allowed for logo and favicon'));
+    }
+    cb(null, true);
+  },
 });
+
+// GET is public (storefront needs logo/favicon)
 router.get('/', storeSettingsController.getSettings);
+
+// PUT requires auth – multipart: name, caption, logo?, favicon?
 router.put(
   '/',
+  authMiddleware,
   upload.fields([
     { name: 'logo', maxCount: 1 },
     { name: 'favicon', maxCount: 1 },
   ]),
   storeSettingsController.updateSettings
 );
+
 module.exports = router;
