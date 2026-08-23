@@ -6,24 +6,70 @@ const archiver = require('archiver');
 const axios = require('axios');
 const { PassThrough } = require('stream');
 class ProductExportService {
-  // Helper: extract filenames from a list of URLs (keeping original extension)
-  getFilenamesFromUrls(urls) {
-    if (!urls) return '';
-    const urlArray = Array.isArray(urls) ? urls : urls.split(',').map(u => u.trim());
-    return urlArray
-      .filter(u => u)
-      .map(url => path.basename(url))
-      .join(', ');
+  // Helper: sanitize product folder name
+  sanitizeProductFolderName(productName, productSku) {
+    // Normalize product name: lowercase, replace spaces with -, remove special chars
+    let name = productName.toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '') // allow letters, numbers, spaces, hyphens
+      .trim()
+      .replace(/\s+/g, '-') // replace spaces with -
+      .replace(/-+/g, '-') // collapse multiple hyphens
+      .replace(/^-|-$/g, ''); // trim leading/trailing hyphens
+    // Ensure SKU is safe
+    const sku = productSku.replace(/[^a-zA-Z0-9-]/g, '');
+    // Combine: name + '-' + sku
+    let folder = `${name}-${sku}`;
+    // If name is empty, just use sku
+    if (!name) folder = sku;
+    // Remove any unsafe characters that might remain
+    folder = folder.replace(/[^a-zA-Z0-9-]/g, '');
+    // Collapse multiple hyphens
+    folder = folder.replace(/-+/g, '-').replace(/^-|-$/g, '');
+    return folder;
+  }
+  // Helper: sanitize variant folder name: sku-color-size
+  sanitizeVariantFolderName(variantSku, color, size) {
+    const parts = [];
+    // SKU is mandatory
+    const sku = variantSku.replace(/[^a-zA-Z0-9-]/g, '');
+    parts.push(sku);
+    if (color && color.trim() !== '') {
+      const col = color.trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, '')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+      if (col) parts.push(col);
+    }
+    if (size && size.trim() !== '') {
+      const sz = size.trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, '')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+      if (sz) parts.push(sz);
+    }
+    return parts.join('-');
+  }
+  // Generate local path for image in ZIP with new folder structure
+  getImageZipPath(productName, productSku, isVariant, variantSku, variantColor, variantSize, position, extension) {
+    const productFolder = this.sanitizeProductFolderName(productName, productSku);
+    const pos = String(position).padStart(2, '0');
+    const filename = `${pos}.${extension}`;
+    if (isVariant) {
+      const variantFolder = this.sanitizeVariantFolderName(variantSku, variantColor, variantSize);
+      return `images/${productFolder}/variants/${variantFolder}/${filename}`;
+    } else {
+      return `images/${productFolder}/product/${filename}`;
+    }
   }
   // Get file extension from URL or content-type
   getExtensionFromUrl(url, contentType) {
     if (!url) return 'jpg';
-    // Try to get from URL path
     let ext = path.extname(url).toLowerCase().replace(/^\./, '');
     if (ext && ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) {
       return ext;
     }
-    // Try from contentType
     if (contentType) {
       const mimeToExt = {
         'image/jpeg': 'jpg',
@@ -34,20 +80,7 @@ class ProductExportService {
       const mime = contentType.split(';')[0].trim();
       if (mimeToExt[mime]) return mimeToExt[mime];
     }
-    return 'jpg'; // fallback
-  }
-  // Generate local path for image in ZIP
-  getImageZipPath(productSku, isVariant, variantSku, position, extension) {
-    // Ensure productSku is clean (no slashes)
-    const safeSku = productSku.replace(/[^a-zA-Z0-9\-_]/g, '');
-    const safeVariantSku = variantSku ? variantSku.replace(/[^a-zA-Z0-9\-_]/g, '') : '';
-    const pos = String(position).padStart(2, '0');
-    const filename = `${pos}.${extension}`;
-    if (isVariant) {
-      return `images/${safeSku}/variants/${safeVariantSku}/${filename}`;
-    } else {
-      return `images/${safeSku}/product/${filename}`;
-    }
+    return 'jpg';
   }
   // Download an image and add to ZIP archive
   async addImageToZip(archive, imageUrl, zipPath) {
@@ -56,18 +89,15 @@ class ProductExportService {
         method: 'get',
         url: imageUrl,
         responseType: 'stream',
-        timeout: 30000, // 30 seconds
+        timeout: 30000,
       });
-      // Add to archive with the desired path
       archive.append(response.data, { name: zipPath });
-      // console.log(`Added image: ${zipPath}`);
     } catch (error) {
       console.error(`Failed to download image ${imageUrl}: ${error.message}`);
     }
   }
   async generateExportZip(filters = {}) {
     const { search, status, categoryId } = filters;
-    // Build where clause for products
     const where = {};
     if (status === 'active') {
       where.isActive = true;
@@ -83,7 +113,6 @@ class ProductExportService {
         { defaultSku: { [Op.iLike]: `%${search}%` } }
       ];
     }
-    // Fetch products with variants, product-level images, category, and subcategory
     const products = await Product.findAll({
       where,
       include: [
@@ -122,7 +151,6 @@ class ProductExportService {
         p.variants.forEach(v => variantIds.push(v.id));
       }
     });
-    // Fetch variant images (variantId not null)
     let variantImagesMap = {};
     if (variantIds.length > 0) {
       const variantImages = await ProductImage.findAll({
@@ -138,12 +166,10 @@ class ProductExportService {
         variantImagesMap[img.variantId].push(img);
       });
     }
-    // Helper to format boolean to Yes/No
     const formatBoolean = (value) => {
       if (value === null || value === undefined) return '';
       return value ? 'Yes' : 'No';
     };
-    // Helper to get product video URLs (full URLs) as array
     const getProductVideoUrlsList = (product) => {
       const urls = [];
       if (product.videoUrl) urls.push(product.videoUrl);
@@ -153,7 +179,6 @@ class ProductExportService {
       }
       return urls;
     };
-    // Helper to get variant video URL (single)
     const getVariantVideoUrl = (variant) => {
       if (variant.cloudinaryVideoPublicId) {
         const cloudName = process.env.CLOUDINARY_CLOUD_NAME || 'your-cloud-name';
@@ -164,16 +189,14 @@ class ProductExportService {
       }
       return '';
     };
-    // Create archive (ZIP)
+    // Create archive
     const archive = archiver('zip', { zlib: { level: 9 } });
     const archiveStream = new PassThrough();
     archive.pipe(archiveStream);
-    // We'll collect all image tasks to download concurrently later
     const imageQueue = [];
     // Prepare Excel workbook
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Products');
-    // Define columns (22 columns)
     worksheet.columns = [
       { header: 'Row Type', key: 'rowType', width: 15 },
       { header: 'Product SKU', key: 'productSku', width: 20 },
@@ -196,7 +219,6 @@ class ProductExportService {
       { header: 'Image URLs', key: 'imageUrls', width: 50 },
       { header: 'Video URLs', key: 'videoUrls', width: 50 }
     ];
-    // Style header row
     const headerRow = worksheet.getRow(1);
     headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
     headerRow.fill = {
@@ -206,7 +228,6 @@ class ProductExportService {
     };
     headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
     headerRow.height = 25;
-    // Freeze first 4 columns
     worksheet.views = [{ state: 'frozen', xSplit: 4 }];
     // Process each product
     for (const product of products) {
@@ -214,13 +235,14 @@ class ProductExportService {
       const categoryName = product.category ? product.category.name : '';
       const subcategoryName = product.subcategory ? product.subcategory.name : '';
       const productSku = product.defaultSku || product.id;
+      const productName = product.name || 'product';
       // Product images
       const productImages = (product.images || []).filter(img => !img.variantId);
       const productImagePaths = [];
-      for (const img of productImages) {
+      for (const [idx, img] of productImages.entries()) {
+        const position = (img.position !== null && img.position !== undefined) ? img.position : (idx + 1);
         const ext = this.getExtensionFromUrl(img.url);
-        const position = img.position || (productImages.indexOf(img) + 1);
-        const zipPath = this.getImageZipPath(productSku, false, null, position, ext);
+        const zipPath = this.getImageZipPath(productName, productSku, false, null, null, null, position, ext);
         productImagePaths.push(zipPath);
         imageQueue.push({ url: img.url, zipPath });
       }
@@ -249,48 +271,52 @@ class ProductExportService {
       };
       worksheet.addRow(productRowData);
       // Variants
-      for (const variant of variants) {
-        const variantSku = variant.sku || `var-${variant.id}`;
-        const varImages = variantImagesMap[variant.id] || [];
-        const varImagePaths = [];
-        for (const img of varImages) {
-          const ext = this.getExtensionFromUrl(img.url);
-          const position = img.position || (varImages.indexOf(img) + 1);
-          const zipPath = this.getImageZipPath(productSku, true, variantSku, position, ext);
-          varImagePaths.push(zipPath);
-          imageQueue.push({ url: img.url, zipPath });
+      if (variants.length > 0) {
+        for (const variant of variants) {
+          const variantSku = variant.sku || `var-${variant.id}`;
+          const variantColor = variant.color || '';
+          const variantSize = variant.size || '';
+          const varImages = variantImagesMap[variant.id] || [];
+          const varImagePaths = [];
+          for (const [idx, img] of varImages.entries()) {
+            const position = (img.position !== null && img.position !== undefined) ? img.position : (idx + 1);
+            const ext = this.getExtensionFromUrl(img.url);
+            const zipPath = this.getImageZipPath(productName, productSku, true, variantSku, variantColor, variantSize, position, ext);
+            varImagePaths.push(zipPath);
+            imageQueue.push({ url: img.url, zipPath });
+          }
+          const variantVideoUrl = getVariantVideoUrl(variant);
+          const variantRowData = {
+            rowType: 'Variant',
+            productSku: product.defaultSku || '',
+            productName: '',
+            variantSku: variant.sku || '',
+            size: variant.size || '',
+            color: variant.color || '',
+            price: variant.price !== null ? Number(variant.price) : '',
+            stock: variant.stockQuantity !== null ? Number(variant.stockQuantity) : '',
+            category: '',
+            subcategory: '',
+            showFeatured: '',
+            showBestSellers: '',
+            showNewArrivals: '',
+            showPremium: '',
+            weight: '',
+            length: '',
+            breadth: '',
+            height: '',
+            imageUrls: varImagePaths.join('; '),
+            videoUrls: variantVideoUrl
+          };
+          worksheet.addRow(variantRowData);
         }
-        const variantVideoUrl = getVariantVideoUrl(variant);
-        const variantRowData = {
-          rowType: 'Variant',
-          productSku: product.defaultSku || '',
-          productName: '',
-          variantSku: variant.sku || '',
-          size: variant.size || '',
-          color: variant.color || '',
-          price: variant.price !== null ? Number(variant.price) : '',
-          stock: variant.stockQuantity !== null ? Number(variant.stockQuantity) : '',
-          category: '',
-          subcategory: '',
-          showFeatured: '',
-          showBestSellers: '',
-          showNewArrivals: '',
-          showPremium: '',
-          weight: '',
-          length: '',
-          breadth: '',
-          height: '',
-          imageUrls: varImagePaths.join('; '),
-          videoUrls: variantVideoUrl
-        };
-        worksheet.addRow(variantRowData);
       }
-      worksheet.addRow({}); // empty row after product
+      worksheet.addRow({}); // empty separator
     }
     // Generate Excel buffer
     const excelBuffer = await workbook.xlsx.writeBuffer();
     archive.append(excelBuffer, { name: 'products.xls' });
-    // Now download images with concurrency limit
+    // Download images with concurrency limit
     const concurrencyLimit = 10;
     let active = 0;
     let index = 0;
@@ -315,9 +341,7 @@ class ProductExportService {
       initialPromises.push(next());
     }
     await Promise.all(initialPromises);
-    // Finalize archive
     archive.finalize();
-    // Return buffer from stream
     return new Promise((resolve, reject) => {
       const chunks = [];
       archiveStream.on('data', chunk => chunks.push(chunk));
@@ -325,7 +349,6 @@ class ProductExportService {
       archiveStream.on('error', reject);
     });
   }
-  // Keep this method for backward compatibility, but we will use the zip method now
   async exportProducts(filters = {}) {
     return this.generateExportZip(filters);
   }
