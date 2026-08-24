@@ -1,587 +1,728 @@
-const fs = require('fs');
 const path = require('path');
+const fs = require('fs');
 const os = require('os');
 const { v4: uuidv4 } = require('uuid');
 const XLSX = require('xlsx');
 const AdmZip = require('adm-zip');
-const { Op } = require('sequelize');
 const {
   Product,
-  ProductImage,
   ProductVariant,
+  ProductImage,
   Category,
+  User,
   sequelize,
 } = require('../models');
+const { Op } = require('sequelize');
 const { uploadFileToCloudinary } = require('../utils/cloudinary');
-
-function normalizeKey(key) {
-  return String(key || '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ');
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']);
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.avi', '.mkv']);
+function normalizeSku(sku) {
+  if (sku == null || sku === '') return '';
+  return String(sku).trim();
 }
-
-function getCell(row, possibleKeys) {
-  const map = {};
-  for (const k of Object.keys(row || {})) {
-    map[normalizeKey(k)] = row[k];
-  }
-  for (const key of possibleKeys) {
-    const val = map[normalizeKey(key)];
-    if (val !== undefined && val !== null && String(val).trim() !== '') {
-      return val;
+function isImageFile(name) {
+  return IMAGE_EXTENSIONS.has(path.extname(name).toLowerCase());
+}
+function isVideoFile(name) {
+  return VIDEO_EXTENSIONS.has(path.extname(name).toLowerCase());
+}
+/**
+ * Extract position from filename if present.
+ * Examples: 00.jpg → 0, Chandan-Maroon-1.jpg → 1, name_2_800x.jpg → 2
+ * Returns null when no position found (caller uses sequential index).
+ */
+function parsePositionFromFilename(filename) {
+  const base = path.basename(filename, path.extname(filename));
+  // Prefer leading zero-padded index: 00, 01, 02
+  let m = base.match(/^(\d+)$/);
+  if (m) return parseInt(m[1], 10);
+  // Common patterns: name-1, name_1, name 1, name(1), name_2_800x
+  const patterns = [
+    /[_\-\s](\d+)(?:[_\-\s]|$)/,
+    /\((\d+)\)/,
+    /(?:position|pos|p)[_\-\s]?(\d+)/i,
+    /(\d+)$/,
+  ];
+  for (const re of patterns) {
+    const match = base.match(re);
+    if (match) {
+      const n = parseInt(match[1], 10);
+      if (!Number.isNaN(n) && n >= 0) return n;
     }
   }
   return null;
 }
-
-function parseYesNo(val) {
-  if (val === true || val === 1) return true;
-  if (val === false || val === 0) return false;
-  const s = String(val || '').trim().toLowerCase();
-  return s === 'yes' || s === 'true' || s === '1';
-}
-
-function parseNumber(val, fallback = null) {
-  if (val === undefined || val === null || val === '') return fallback;
-  const n = Number(val);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function splitMediaUrls(raw) {
-  if (!raw) return [];
-  return String(raw)
-    .split(/[;|]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-/** Build index of all image files under extractDir for fast lookup */
-function buildMediaIndex(rootDir) {
-  const byRel = new Map(); // normalized relative path -> absolute path
-  const byBasename = new Map(); // basename -> [absolute paths]
-  const imageExt = /\.(jpe?g|png|webp|gif|bmp)$/i;
-
-  function walk(dir, relBase = '') {
+function listFilesRecursive(dir) {
+  const result = [];
+  if (!dir || !fs.existsSync(dir)) return result;
+  const walk = (d) => {
     let entries;
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
+      entries = fs.readdirSync(d, { withFileTypes: true });
     } catch {
       return;
     }
-    for (const ent of entries) {
-      const full = path.join(dir, ent.name);
-      const rel = relBase ? `${relBase}/${ent.name}` : ent.name;
-      if (ent.isDirectory()) {
-        walk(full, rel);
-      } else if (ent.isFile() && imageExt.test(ent.name)) {
-        const norm = rel.replace(/\\/g, '/').toLowerCase();
-        byRel.set(norm, full);
-        // also without leading "images/"
-        if (norm.startsWith('images/')) {
-          byRel.set(norm.slice('images/'.length), full);
-        }
-        const base = ent.name.toLowerCase();
-        if (!byBasename.has(base)) byBasename.set(base, []);
-        byBasename.get(base).push(full);
-      }
+    for (const e of entries) {
+      const full = path.join(d, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.isFile()) result.push(full);
     }
-  }
-
-  walk(rootDir);
-  return { byRel, byBasename };
+  };
+  walk(dir);
+  return result;
 }
-
-function resolveMediaPath(mediaIndex, relativePath) {
-  if (!relativePath) return null;
-  let rel = String(relativePath).trim().replace(/\\/g, '/');
-  if (rel.startsWith('/')) rel = rel.slice(1);
-  if (rel.startsWith('./')) rel = rel.slice(2);
-  const norm = rel.toLowerCase();
-
-  if (mediaIndex.byRel.has(norm)) return mediaIndex.byRel.get(norm);
-  if (mediaIndex.byRel.has('images/' + norm)) {
-    return mediaIndex.byRel.get('images/' + norm);
-  }
-
-  // Match by last 2–3 path segments
-  const parts = norm.split('/').filter(Boolean);
-  for (let n = Math.min(3, parts.length); n >= 2; n--) {
-    const suffix = parts.slice(-n).join('/');
-    for (const [key, full] of mediaIndex.byRel.entries()) {
-      if (key.endsWith(suffix) || key.endsWith('/' + suffix)) return full;
-    }
-  }
-
-  // Basename fallback (only if unique)
-  const base = parts[parts.length - 1];
-  const candidates = mediaIndex.byBasename.get(base) || [];
-  if (candidates.length === 1) return candidates[0];
-
-  return null;
-}
-
-async function ensureCategory(categoryName, subcategoryName, transaction) {
-  let categoryId = null;
-  let subcategoryId = null;
-
-  if (categoryName) {
-    let cat = await Category.findOne({
-      where: { name: { [Op.iLike]: String(categoryName).trim() } },
-      transaction,
-    });
-    if (!cat) {
-      cat = await Category.create(
-        {
-          name: String(categoryName).trim(),
-          order: 0,
-          isActive: true,
-          showInCategoryGrid: true,
-          showInHero: false,
-        },
-        { transaction }
-      );
-    }
-    categoryId = cat.id;
-
-    if (subcategoryName) {
-      let sub = await Category.findOne({
-        where: {
-          name: { [Op.iLike]: String(subcategoryName).trim() },
-          parentId: categoryId,
-        },
-        transaction,
-      });
-      if (!sub) {
-        sub = await Category.findOne({
-          where: { name: { [Op.iLike]: String(subcategoryName).trim() } },
-          transaction,
-        });
-      }
-      if (!sub) {
-        sub = await Category.create(
-          {
-            name: String(subcategoryName).trim(),
-            parentId: categoryId,
-            order: 0,
-            isActive: true,
-            showInCategoryGrid: false,
-            showInHero: false,
-          },
-          { transaction }
-        );
-      }
-      subcategoryId = sub.id;
-    }
-  }
-
-  return { categoryId, subcategoryId };
-}
-
-async function uploadOneImage(localPath, folder, warnings) {
+function listImageFilesInDir(dir) {
+  if (!dir || !fs.existsSync(dir)) return [];
   try {
-    const result = await uploadFileToCloudinary(localPath, {
+    return fs
+      .readdirSync(dir)
+      .filter((f) => {
+        try {
+          return fs.statSync(path.join(dir, f)).isFile() && isImageFile(f);
+        } catch {
+          return false;
+        }
+      })
+      .map((f) => path.join(dir, f))
+      .sort((a, b) => path.basename(a).localeCompare(path.basename(b), undefined, { numeric: true }));
+  } catch {
+    return [];
+  }
+}
+function listVideoFilesInDir(dir) {
+  if (!dir || !fs.existsSync(dir)) return [];
+  try {
+    return fs
+      .readdirSync(dir)
+      .filter((f) => {
+        try {
+          return fs.statSync(path.join(dir, f)).isFile() && isVideoFile(f);
+        } catch {
+          return false;
+        }
+      })
+      .map((f) => path.join(dir, f));
+  } catch {
+    return [];
+  }
+}
+/**
+ * Build maps from extracted ZIP media tree:
+ * images/
+ *   {anything}-{PRODUCT_SKU}/
+ *     product/          → product-level images
+ *     variants/
+ *       {VARIANT_SKU}/  → variant-level images
+ * videos/ (optional, same layout)
+ *
+ * Matching is by SKU contained in folder name — no Excel URL validation.
+ */
+function buildMediaMaps(mediaRoot) {
+  const productImages = {}; // productSku → [filePaths]
+  const variantImages = {}; // variantSku → [filePaths]
+  const productVideos = {}; // productSku → [filePaths]
+  const variantVideos = {}; // variantSku → [filePaths]
+  if (!mediaRoot || !fs.existsSync(mediaRoot)) {
+    return { productImages, variantImages, productVideos, variantVideos };
+  }
+  // Find images/ and videos/ dirs (may be nested one level under zip root)
+  const findNamedDir = (root, name) => {
+    const direct = path.join(root, name);
+    if (fs.existsSync(direct) && fs.statSync(direct).isDirectory()) return direct;
+    try {
+      for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+        if (e.isDirectory()) {
+          const nested = path.join(root, e.name, name);
+          if (fs.existsSync(nested) && fs.statSync(nested).isDirectory()) return nested;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
+  };
+  const imagesRoot = findNamedDir(mediaRoot, 'images');
+  const videosRoot = findNamedDir(mediaRoot, 'videos');
+  const processSkuFolders = (root, targetProductMap, targetVariantMap, listFn) => {
+    if (!root) return;
+    let productFolders;
+    try {
+      productFolders = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory());
+    } catch {
+      return;
+    }
+    for (const pf of productFolders) {
+      const productFolderPath = path.join(root, pf.name);
+      // Folder name often ends with -SKU (e.g. banarasi-pure-silk-saree-BAN-SILK-002)
+      // We resolve SKU later by matching known product SKUs; also try last segment after last hyphen group.
+      const productDir = path.join(productFolderPath, 'product');
+      const variantsDir = path.join(productFolderPath, 'variants');
+      // Store under folder name key as well so we can match by endsWith(sku)
+      const folderKey = pf.name;
+      const pFiles = listFn(productDir);
+      if (pFiles.length) {
+        if (!targetProductMap[folderKey]) targetProductMap[folderKey] = [];
+        targetProductMap[folderKey].push(...pFiles);
+      }
+      if (fs.existsSync(variantsDir) && fs.statSync(variantsDir).isDirectory()) {
+        let variantFolders;
+        try {
+          variantFolders = fs.readdirSync(variantsDir, { withFileTypes: true }).filter((e) => e.isDirectory());
+        } catch {
+          variantFolders = [];
+        }
+        for (const vf of variantFolders) {
+          const vSku = normalizeSku(vf.name);
+          if (!vSku) continue;
+          const vFiles = listFn(path.join(variantsDir, vf.name));
+          if (vFiles.length) {
+            if (!targetVariantMap[vSku]) targetVariantMap[vSku] = [];
+            targetVariantMap[vSku].push(...vFiles);
+          }
+        }
+      }
+    }
+  };
+  processSkuFolders(imagesRoot, productImages, variantImages, listImageFilesInDir);
+  processSkuFolders(videosRoot, productVideos, variantVideos, listVideoFilesInDir);
+  return { productImages, variantImages, productVideos, variantVideos };
+}
+function findProductImageFiles(productImagesMap, productSku) {
+  const sku = normalizeSku(productSku);
+  if (!sku) return [];
+  // Exact folder key or folder name ending with -SKU / SKU
+  if (productImagesMap[sku]) return productImagesMap[sku];
+  for (const key of Object.keys(productImagesMap)) {
+    if (key === sku || key.endsWith('-' + sku) || key.endsWith(sku)) {
+      return productImagesMap[key];
+    }
+  }
+  return [];
+}
+async function resolveCategoryByName(name, transaction) {
+  if (!name || !String(name).trim()) return null;
+  const trimmed = String(name).trim();
+  let cat = await Category.findOne({
+    where: { name: { [Op.iLike]: trimmed }, parentId: null },
+    transaction,
+  });
+  if (cat) return cat;
+  cat = await Category.findOne({
+    where: { name: { [Op.iLike]: trimmed } },
+    transaction,
+  });
+  if (cat) return cat;
+  // Create top-level category
+  const permalink = trimmed
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  cat = await Category.create(
+    {
+      name: trimmed,
+      order: 0,
+      isActive: true,
+      showInCategoryGrid: true,
+      showInHero: false,
+      permalink: permalink || `cat-${Date.now()}`,
+    },
+    { transaction }
+  );
+  return cat;
+}
+async function resolveSubcategoryByName(name, parentCategoryId, transaction) {
+  if (!name || !String(name).trim() || !parentCategoryId) return null;
+  const trimmed = String(name).trim();
+  let sub = await Category.findOne({
+    where: {
+      name: { [Op.iLike]: trimmed },
+      parentId: parentCategoryId,
+    },
+    transaction,
+  });
+  if (sub) return sub;
+  const permalink = trimmed
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  sub = await Category.create(
+    {
+      name: trimmed,
+      parentId: parentCategoryId,
+      order: 0,
+      isActive: true,
+      showInCategoryGrid: true,
+      showInHero: false,
+      permalink: `${permalink || 'sub'}-${parentCategoryId}-${Date.now()}`,
+    },
+    { transaction }
+  );
+  return sub;
+}
+async function uploadImageFile(filePath, productId, warnings, skuLabel) {
+  try {
+    const uploaded = await uploadFileToCloudinary(filePath, {
       resource_type: 'image',
-      folder,
+      folder: `products/${productId}`,
     });
-    return result;
+    return uploaded.url;
   } catch (err) {
-    const msg = `Cloudinary upload failed for ${path.basename(localPath)}: ${err.message}`;
-    warnings.push(msg);
-    console.error(msg, err);
+    // Local fallback so import still succeeds
+    const uploadsDir = path.join(__dirname, '../uploads/products', String(productId));
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    const destName = `${Date.now()}-${path.basename(filePath).replace(/\s+/g, '_')}`;
+    const dest = path.join(uploadsDir, destName);
+    fs.copyFileSync(filePath, dest);
+    warnings.push(
+      `SKU ${skuLabel}: Cloudinary upload failed for ${path.basename(filePath)}, saved locally (${err.message})`
+    );
+    return `/uploads/products/${productId}/${destName}`;
+  }
+}
+async function uploadVideoFile(filePath, productId, warnings, skuLabel) {
+  try {
+    const uploaded = await uploadFileToCloudinary(filePath, {
+      resource_type: 'video',
+      folder: `products/${productId}/videos`,
+    });
+    return { url: uploaded.url, publicId: uploaded.publicId };
+  } catch (err) {
+    warnings.push(
+      `SKU ${skuLabel}: video upload failed for ${path.basename(filePath)} – ${err.message}`
+    );
     return null;
   }
 }
-
-class ProductImportService {
-  async importFromFile({ filePath, originalName, importType = 'excel', userId }) {
-    const warnings = [];
-    let extractDir = null;
-    let excelPath = filePath;
-    let mediaIndex = null;
-
-    const isZip =
-      (originalName && originalName.toLowerCase().endsWith('.zip')) ||
-      (filePath && filePath.toLowerCase().endsWith('.zip'));
-
+/**
+ * Replace all images for a product (variantId null) or a specific variant.
+ * No validation against Excel Image URLs — only folder contents matter.
+ * Position: from filename when present, otherwise sequential count-based index.
+ */
+async function replaceImages({ productId, variantId, imageFiles, transaction, warnings, skuLabel }) {
+  if (!imageFiles || imageFiles.length === 0) return 0;
+  const where = { productId };
+  if (variantId) where.variantId = variantId;
+  else where.variantId = null;
+  await ProductImage.destroy({ where, transaction });
+  let imported = 0;
+  let nextFallback = 0;
+  const usedPositions = new Set();
+  for (let i = 0; i < imageFiles.length; i++) {
+    const filePath = imageFiles[i];
     try {
+      let position = parsePositionFromFilename(path.basename(filePath));
+      if (position == null || usedPositions.has(position)) {
+        while (usedPositions.has(nextFallback)) nextFallback += 1;
+        position = nextFallback;
+        nextFallback += 1;
+      }
+      usedPositions.add(position);
+      const url = await uploadImageFile(filePath, productId, warnings, skuLabel);
+      await ProductImage.create(
+        {
+          id: uuidv4(),
+          productId,
+          variantId: variantId || null,
+          url,
+          position,
+        },
+        { transaction }
+      );
+      imported += 1;
+    } catch (e) {
+      warnings.push(`SKU ${skuLabel}: failed image ${path.basename(filePath)} – ${e.message}`);
+    }
+  }
+  return imported;
+}
+class ProductImportService {
+  async importProducts(file, importType = 'excel', userId = null) {
+    const warnings = [];
+    let importedProducts = 0;
+    let updatedProducts = 0;
+    let importedVariants = 0;
+    let updatedVariants = 0;
+    let importedImages = 0;
+    let importedVideos = 0;
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'product-import-'));
+    let excelPath = null;
+    let mediaRoot = tempDir;
+    try {
+      const originalName = (file.originalname || '').toLowerCase();
+      const isZip =
+        importType !== 'excel' ||
+        originalName.endsWith('.zip') ||
+        (file.mimetype && (file.mimetype.includes('zip') || file.mimetype.includes('compressed')));
       if (isZip) {
-        extractDir = path.join(os.tmpdir(), `product-import-${uuidv4()}`);
-        fs.mkdirSync(extractDir, { recursive: true });
-
-        const zip = new AdmZip(filePath);
-        zip.extractAllTo(extractDir, true);
-
-        excelPath = this.findExcelFile(extractDir);
+        const zip = new AdmZip(file.path || file.buffer);
+        zip.extractAllTo(tempDir, true);
+        const findExcel = (dir) => {
+          let entries;
+          try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+          } catch {
+            return null;
+          }
+          // Prefer .xlsx over .xls
+          let xlsx = null;
+          let xls = null;
+          for (const e of entries) {
+            const full = path.join(dir, e.name);
+            if (e.isDirectory()) {
+              const found = findExcel(full);
+              if (found) {
+                if (found.endsWith('.xlsx')) return found;
+                if (!xlsx && !xls) xls = found;
+              }
+            } else if (/\.xlsx$/i.test(e.name)) {
+              xlsx = full;
+            } else if (/\.xls$/i.test(e.name) && !/\.xlsx$/i.test(e.name)) {
+              xls = full;
+            }
+          }
+          return xlsx || xls;
+        };
+        excelPath = findExcel(tempDir);
         if (!excelPath) {
-          throw new Error(
-            'ZIP must contain products.xls or products.xlsx'
-          );
+          const err = new Error('No Excel file (.xls/.xlsx) found inside the ZIP');
+          err.status = 400;
+          throw err;
         }
-
-        // Always index images if present in ZIP
-        mediaIndex = buildMediaIndex(extractDir);
-        const imageCount = mediaIndex.byRel.size;
-        console.log(`[import] Extracted ZIP. Excel: ${excelPath}, image files indexed: ${imageCount}`);
-        if (imageCount === 0) {
-          warnings.push(
-            'ZIP extracted but no image files (.jpg/.png/.webp) were found under images/'
-          );
+        mediaRoot = tempDir;
+      } else {
+        excelPath = file.path;
+        if (!excelPath && file.buffer) {
+          excelPath = path.join(tempDir, 'products.xlsx');
+          fs.writeFileSync(excelPath, file.buffer);
         }
-      } else if (
-        importType === 'excel_images' ||
-        importType === 'excel_images_videos'
-      ) {
-        warnings.push(
-          'Images requested but file is not a ZIP. Only Excel data imported.'
-        );
       }
-
-      // Process images whenever we have media in the ZIP
-      // (do not rely only on importType — UI may send "excel" with a ZIP)
-      const processImages = !!mediaIndex && mediaIndex.byRel.size > 0;
-
-      if (isZip && !processImages) {
-        warnings.push(
-          'No processable images in ZIP. Check that paths in Image URLs match files inside the ZIP.'
-        );
-      }
-
       const workbook = XLSX.readFile(excelPath);
       const sheetName = workbook.SheetNames[0];
-      const sheet = workbook.Sheets[sheetName];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-
-      if (!rows.length) {
-        throw new Error('Excel file has no data rows');
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' });
+      if (!rows || rows.length === 0) {
+        const err = new Error('Excel file has no data rows');
+        err.status = 400;
+        throw err;
       }
-
-      // Log headers for debugging
-      console.log('[import] Excel headers:', Object.keys(rows[0] || {}));
-
-      const groups = new Map();
-      for (const row of rows) {
-        const rowType = String(
-          getCell(row, ['Row Type', 'rowtype', 'type']) || ''
-        )
-          .trim()
-          .toLowerCase();
-        const productSku = String(
-          getCell(row, ['Product SKU', 'ProductSKU', 'SKU', 'defaultSku']) ||
-            ''
-        ).trim();
-        if (!productSku) continue;
-
-        if (!groups.has(productSku)) {
-          groups.set(productSku, { productRow: null, variantRows: [] });
-        }
-        const g = groups.get(productSku);
-
-        if (rowType === 'product') {
-          g.productRow = row;
-        } else if (rowType === 'variant') {
-          g.variantRows.push(row);
-        } else if (!g.productRow && getCell(row, ['Product Name', 'name'])) {
-          g.productRow = row;
-        } else {
-          g.variantRows.push(row);
-        }
+      // Detect format: sample uses "Row Type" + "Product SKU"
+      const firstKeys = Object.keys(rows[0] || {}).map((k) => k.toLowerCase());
+      const isRowTypeFormat =
+        firstKeys.includes('row type') ||
+        firstKeys.some((k) => k === 'rowtype') ||
+        rows.some((r) => {
+          const rt = r['Row Type'] ?? r['row type'] ?? r.RowType;
+          return rt && String(rt).toLowerCase() === 'product';
+        });
+      const mediaMaps =
+        importType === 'excel_images' ||
+        importType === 'excel_videos' ||
+        importType === 'excel_images_videos'
+          ? buildMediaMaps(mediaRoot)
+          : {
+              productImages: {},
+              variantImages: {},
+              productVideos: {},
+              variantVideos: {},
+            };
+      // Resolve a userId for new products
+      let resolvedUserId = userId;
+      if (!resolvedUserId) {
+        const anyUser = await User.findOne({ order: [['createdAt', 'ASC']] });
+        if (anyUser) resolvedUserId = anyUser.id;
       }
-
-      let importedProducts = 0;
-      let updatedProducts = 0;
-      let importedVariants = 0;
-      let updatedVariants = 0;
-      let importedImages = 0;
-      let importedVideos = 0;
-
-      for (const [productSku, group] of groups.entries()) {
-        const transaction = await sequelize.transaction();
-        try {
-          const prow = group.productRow || group.variantRows[0];
-          if (!prow) {
-            await transaction.rollback();
-            continue;
-          }
-
-          const name =
-            String(getCell(prow, ['Product Name', 'name']) || productSku).trim() ||
-            productSku;
-          const basePrice = parseNumber(
-            getCell(prow, ['Price', 'basePrice', 'Base Price']),
-            0
-          );
-          const categoryName = getCell(prow, ['Category']);
-          const subcategoryName = getCell(prow, ['Subcategory']);
-          const { categoryId, subcategoryId } = await ensureCategory(
-            categoryName,
-            subcategoryName,
-            transaction
-          );
-
-          const productPayload = {
-            name,
-            description: getCell(prow, ['Description']) || null,
-            basePrice,
-            defaultSku: productSku,
-            categoryId,
-            subcategoryId,
-            userId,
-            isActive: true,
-            stockQuantity:
-              parseNumber(getCell(prow, ['Stock', 'stockQuantity']), 0) || 0,
-            showInFeaturedProducts: parseYesNo(
-              getCell(prow, [
-                'Show In Featured Products (Yes/No)',
-                'Show In Featured Products',
-                'showInFeaturedProducts',
-              ])
-            ),
-            showInBestSellers: parseYesNo(
-              getCell(prow, [
-                'Show In Best Sellers (Yes/No)',
-                'Show In Best Sellers',
-                'showInBestSellers',
-              ])
-            ),
-            showInNewArrivals: parseYesNo(
-              getCell(prow, [
-                'Show In New Arrivals (Yes/No)',
-                'Show In New Arrivals',
-                'showInNewArrivals',
-              ])
-            ),
-            showInPremiumProducts: parseYesNo(
-              getCell(prow, [
-                'Show In Premium Products (Yes/No)',
-                'Show In Premium Products',
-                'showInPremiumProducts',
-              ])
-            ),
-            weight: parseNumber(getCell(prow, ['Weight']), 0) || 0,
-            length: parseNumber(getCell(prow, ['Length']), 0) || 0,
-            breadth: parseNumber(getCell(prow, ['Breadth']), 0) || 0,
-            height: parseNumber(getCell(prow, ['Height']), 0) || 0,
-          };
-
-          const productVideoRaw = getCell(prow, [
-            'Video URLs',
-            'Video URL',
-            'videoUrl',
-          ]);
-          if (productVideoRaw && String(productVideoRaw).startsWith('http')) {
-            productPayload.videoUrl = String(productVideoRaw)
-              .split(/[;|]/)[0]
-              .trim();
-          }
-
-          let product = await Product.findOne({
-            where: { defaultSku: productSku, userId },
-            transaction,
-          });
-
-          if (product) {
-            await product.update(productPayload, { transaction });
-            updatedProducts += 1;
-          } else {
-            product = await Product.create(
-              { ...productPayload, id: uuidv4() },
-              { transaction }
-            );
-            importedProducts += 1;
-          }
-
-          // ---------- Product-level images ----------
-          if (processImages) {
-            // Replace existing product-level images on re-import
-            await ProductImage.destroy({
-              where: { productId: product.id, variantId: null },
-              transaction,
-            });
-
-            const imageRaws = splitMediaUrls(
-              getCell(prow, [
-                'Image URLs',
-                'Image URL',
-                'Product Image URLs',
-              ])
-            );
-
-            console.log(
-              `[import] ${productSku} product Image URLs count: ${imageRaws.length}`
-            );
-
-            if (imageRaws.length === 0) {
-              warnings.push(
-                `No Image URLs on product row for ${productSku}`
-              );
-            }
-
-            let position = 0;
-            for (const rel of imageRaws) {
-              if (/^https?:\/\//i.test(rel)) {
-                await ProductImage.create(
-                  {
-                    id: uuidv4(),
-                    productId: product.id,
-                    variantId: null,
-                    url: rel,
-                    position: position++,
-                  },
+      if (!resolvedUserId) {
+        const err = new Error('No user available to attach products. Please authenticate.');
+        err.status = 400;
+        throw err;
+      }
+      const yes = (v) => ['yes', 'true', '1', 'y'].includes(String(v || '').trim().toLowerCase());
+      const transaction = await sequelize.transaction();
+      try {
+        // ---------- ROW-TYPE FORMAT (sample ZIP) ----------
+        if (isRowTypeFormat) {
+          // Group: Product rows then following Variant rows until next Product
+          let currentProduct = null;
+          let currentProductSku = '';
+          for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            const get = (...keys) => {
+              for (const k of keys) {
+                if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') {
+                  return row[k];
+                }
+              }
+              // case-insensitive fallback
+              const lowerMap = {};
+              Object.keys(row).forEach((k) => {
+                lowerMap[k.toLowerCase()] = row[k];
+              });
+              for (const k of keys) {
+                const v = lowerMap[k.toLowerCase()];
+                if (v !== undefined && v !== null && String(v).trim() !== '') return v;
+              }
+              return null;
+            };
+            const rowType = String(get('Row Type', 'rowType') || '').trim().toLowerCase();
+            const productSku = normalizeSku(get('Product SKU', 'ProductSKU', 'product sku'));
+            if (rowType === 'product') {
+              if (!productSku) {
+                warnings.push(`Row ${i + 2}: Product row missing Product SKU – skipped`);
+                currentProduct = null;
+                currentProductSku = '';
+                continue;
+              }
+              const name = get('Product Name', 'Name', 'product name') || productSku;
+              const price = parseFloat(get('Price', 'Base Price', 'basePrice')) || 0;
+              const stock = parseInt(get('Stock', 'Stock Quantity', 'stockQuantity') || '0', 10) || 0;
+              const categoryName = get('Category', 'Category Name');
+              const subcategoryName = get('Subcategory', 'Subcategory Name');
+              const weight = parseFloat(get('Weight', 'Weight')) || 0.5;
+              const length = parseFloat(get('Length', 'length')) || 30;
+              const breadth = parseFloat(get('Breadth', 'breadth')) || 25;
+              const height = parseFloat(get('Height', 'height')) || 5;
+              let categoryId = null;
+              let subcategoryId = null;
+              if (categoryName) {
+                const cat = await resolveCategoryByName(categoryName, transaction);
+                if (cat) {
+                  categoryId = cat.id;
+                  if (subcategoryName) {
+                    const sub = await resolveSubcategoryByName(subcategoryName, cat.id, transaction);
+                    if (sub) subcategoryId = sub.id;
+                  }
+                }
+              }
+              // UPSERT by defaultSku (Product SKU) — prevents duplicates
+              let product = await Product.findOne({
+                where: { defaultSku: productSku },
+                transaction,
+              });
+              const payload = {
+                name: String(name),
+                description: product ? product.description : '',
+                basePrice: price,
+                stockQuantity: stock,
+                defaultSku: productSku,
+                categoryId,
+                subcategoryId,
+                status: 'published',
+                showInFeaturedProducts: yes(get('Show In Featured Products (Yes/No)', 'Show In Featured Products')),
+                showInBestSellers: yes(get('Show In Best Sellers (Yes/No)', 'Show In Best Sellers')),
+                showInNewArrivals: yes(get('Show In New Arrivals (Yes/No)', 'Show In New Arrivals')),
+                showInPremiumProducts: yes(get('Show In Premium Products (Yes/No)', 'Show In Premium Products')),
+                weight,
+                length,
+                breadth,
+                height,
+                isActive: true,
+              };
+              if (product) {
+                await product.update(payload, { transaction });
+                updatedProducts += 1;
+              } else {
+                product = await Product.create(
+                  { ...payload, userId: resolvedUserId },
                   { transaction }
                 );
-                importedImages += 1;
-                continue;
+                importedProducts += 1;
               }
-
-              const local = resolveMediaPath(mediaIndex, rel);
-              if (!local) {
-                warnings.push(
-                  `Product image not found in ZIP for ${productSku}: ${rel}`
-                );
-                continue;
-              }
-
-              const uploaded = await uploadOneImage(
-                local,
-                `products/${productSku}`,
-                warnings
-              );
-              if (!uploaded) continue;
-
-              await ProductImage.create(
-                {
-                  id: uuidv4(),
+              currentProduct = product;
+              currentProductSku = productSku;
+              // Images from folder only (ignore Excel Image URLs / Video URLs completely)
+              if (
+                importType === 'excel_images' ||
+                importType === 'excel_images_videos'
+              ) {
+                const pImgs = findProductImageFiles(mediaMaps.productImages, productSku);
+                importedImages += await replaceImages({
                   productId: product.id,
                   variantId: null,
-                  url: uploaded.url,
-                  position: position++,
-                },
-                { transaction }
-              );
-              importedImages += 1;
-            }
-          }
-
-          // ---------- Variants ----------
-          for (const vrow of group.variantRows) {
-            const variantSku = String(
-              getCell(vrow, ['Variant SKU', 'VariantSKU', 'sku']) || ''
-            ).trim();
-            if (!variantSku) continue;
-
-            const variantPayload = {
-              sku: variantSku,
-              size: getCell(vrow, ['Size']) || null,
-              color: getCell(vrow, ['Color']) || null,
-              price: parseNumber(
-                getCell(vrow, ['Price']),
-                product.basePrice || 0
-              ),
-              stockQuantity: parseNumber(
-                getCell(vrow, ['Stock', 'stockQuantity']),
-                0
-              ),
-              productId: product.id,
-            };
-
-            const vVideo = getCell(vrow, [
-              'Video URLs',
-              'Video URL',
-              'videoUrl',
-            ]);
-            if (vVideo && String(vVideo).startsWith('http')) {
-              variantPayload.videoUrl = String(vVideo)
-                .split(/[;|]/)[0]
-                .trim();
-            }
-
-            let variant = await ProductVariant.findOne({
-              where: { sku: variantSku, productId: product.id },
-              transaction,
-            });
-
-            if (variant) {
-              await variant.update(variantPayload, { transaction });
-              updatedVariants += 1;
-            } else {
-              variant = await ProductVariant.create(
-                { ...variantPayload, id: uuidv4() },
-                { transaction }
-              );
-              importedVariants += 1;
-            }
-
-            if (processImages) {
-              await ProductImage.destroy({
+                  imageFiles: pImgs,
+                  transaction,
+                  warnings,
+                  skuLabel: productSku,
+                });
+              }
+              if (
+                importType === 'excel_videos' ||
+                importType === 'excel_images_videos'
+              ) {
+                const pVids = findProductImageFiles(mediaMaps.productVideos, productSku);
+                if (pVids.length) {
+                  const vid = await uploadVideoFile(pVids[0], product.id, warnings, productSku);
+                  if (vid) {
+                    await product.update(
+                      {
+                        videoUrl: vid.url,
+                        cloudinaryVideoPublicId: vid.publicId,
+                      },
+                      { transaction }
+                    );
+                    importedVideos += 1;
+                  }
+                }
+              }
+            } else if (rowType === 'variant') {
+              if (!currentProduct) {
+                // Try attach by Product SKU on the row
+                if (productSku) {
+                  currentProduct = await Product.findOne({
+                    where: { defaultSku: productSku },
+                    transaction,
+                  });
+                  currentProductSku = productSku;
+                }
+              }
+              if (!currentProduct) {
+                warnings.push(`Row ${i + 2}: Variant without parent product – skipped`);
+                continue;
+              }
+              const variantSku = normalizeSku(get('Variant SKU', 'VariantSKU', 'variant sku'));
+              if (!variantSku) {
+                warnings.push(`Row ${i + 2}: Variant missing Variant SKU – skipped`);
+                continue;
+              }
+              const size = get('Size', 'size') || null;
+              const color = get('Color', 'color') || null;
+              const vPrice =
+                get('Price', 'price') != null && String(get('Price', 'price')).trim() !== ''
+                  ? parseFloat(get('Price', 'price'))
+                  : Number(currentProduct.basePrice) || 0;
+              const vStock = parseInt(get('Stock', 'stock', 'Stock Quantity') || '0', 10) || 0;
+              let variant = await ProductVariant.findOne({
                 where: {
-                  productId: product.id,
-                  variantId: variant.id,
+                  productId: currentProduct.id,
+                  sku: variantSku,
                 },
                 transaction,
               });
-
-              const vImageRaws = splitMediaUrls(
-                getCell(vrow, ['Image URLs', 'Image URL'])
-              );
-
-              let vPos = 0;
-              for (const rel of vImageRaws) {
-                if (/^https?:\/\//i.test(rel)) {
-                  await ProductImage.create(
-                    {
-                      id: uuidv4(),
-                      productId: product.id,
-                      variantId: variant.id,
-                      url: rel,
-                      position: vPos++,
-                    },
-                    { transaction }
-                  );
-                  importedImages += 1;
-                  continue;
-                }
-
-                const local = resolveMediaPath(mediaIndex, rel);
-                if (!local) {
-                  warnings.push(
-                    `Variant image not found in ZIP for ${variantSku}: ${rel}`
-                  );
-                  continue;
-                }
-
-                const uploaded = await uploadOneImage(
-                  local,
-                  `products/${productSku}/variants/${variantSku}`,
-                  warnings
-                );
-                if (!uploaded) continue;
-
-                await ProductImage.create(
-                  {
-                    id: uuidv4(),
-                    productId: product.id,
-                    variantId: variant.id,
-                    url: uploaded.url,
-                    position: vPos++,
-                  },
-                  { transaction }
-                );
-                importedImages += 1;
+              const vPayload = {
+                productId: currentProduct.id,
+                sku: variantSku,
+                size: size ? String(size) : null,
+                color: color ? String(color) : null,
+                price: vPrice,
+                stockQuantity: vStock,
+              };
+              if (variant) {
+                await variant.update(vPayload, { transaction });
+                updatedVariants += 1;
+              } else {
+                variant = await ProductVariant.create(vPayload, { transaction });
+                importedVariants += 1;
               }
+              // Variant images from folder only — no Excel URL validation
+              if (
+                importType === 'excel_images' ||
+                importType === 'excel_images_videos'
+              ) {
+                const vImgs = mediaMaps.variantImages[variantSku] || [];
+                importedImages += await replaceImages({
+                  productId: currentProduct.id,
+                  variantId: variant.id,
+                  imageFiles: vImgs,
+                  transaction,
+                  warnings,
+                  skuLabel: variantSku,
+                });
+              }
+              if (
+                importType === 'excel_videos' ||
+                importType === 'excel_images_videos'
+              ) {
+                const vVids = mediaMaps.variantVideos[variantSku] || [];
+                if (vVids.length) {
+                  const vid = await uploadVideoFile(
+                    vVids[0],
+                    currentProduct.id,
+                    warnings,
+                    variantSku
+                  );
+                  if (vid) {
+                    await variant.update(
+                      {
+                        videoUrl: vid.url,
+                        cloudinaryVideoPublicId: vid.publicId,
+                      },
+                      { transaction }
+                    );
+                    importedVideos += 1;
+                  }
+                }
+              }
+            } else {
+              // Unknown row type – skip quietly
             }
           }
-
-          await transaction.commit();
-        } catch (err) {
-          await transaction.rollback();
-          warnings.push(
-            `Failed to import product ${productSku}: ${err.message}`
-          );
-          console.error(`Import error for ${productSku}:`, err);
+        } else {
+          // ---------- LEGACY / EXPORT FORMAT (one product per row) ----------
+          for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            const get = (...keys) => {
+              for (const k of keys) {
+                if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') {
+                  return row[k];
+                }
+              }
+              return null;
+            };
+            const name = get('Name', 'name', 'Product Name');
+            const defaultSku = normalizeSku(get('Default SKU', 'defaultSku', 'SKU', 'sku', 'Product SKU'));
+            if (!name && !defaultSku) {
+              warnings.push(`Row ${i + 2}: skipped (no Name or SKU)`);
+              continue;
+            }
+            let product = null;
+            if (defaultSku) {
+              product = await Product.findOne({ where: { defaultSku }, transaction });
+            }
+            const basePrice = parseFloat(get('Base Price', 'basePrice', 'Price', 'price')) || 0;
+            const stockQuantity = parseInt(get('Stock Quantity', 'stockQuantity', 'Stock') || '0', 10) || 0;
+            const payload = {
+              name: name || (product ? product.name : `Product ${defaultSku || i}`),
+              description: get('Description', 'description') || (product ? product.description : ''),
+              basePrice,
+              stockQuantity,
+              defaultSku: defaultSku || (product ? product.defaultSku : null),
+              status: (get('Status', 'status') || 'draft').toString().toLowerCase() === 'published' ? 'published' : 'draft',
+              isActive: true,
+              weight: parseFloat(get('Weight', 'weight')) || 0.5,
+              length: parseFloat(get('Length', 'length')) || 30,
+              breadth: parseFloat(get('Breadth', 'breadth')) || 25,
+              height: parseFloat(get('Height', 'height')) || 5,
+            };
+            if (product) {
+              await product.update(payload, { transaction });
+              updatedProducts += 1;
+            } else {
+              product = await Product.create(
+                { ...payload, userId: resolvedUserId },
+                { transaction }
+              );
+              importedProducts += 1;
+            }
+            // Images from folders only when import includes images
+            if (
+              (importType === 'excel_images' || importType === 'excel_images_videos') &&
+              defaultSku
+            ) {
+              const pImgs = findProductImageFiles(mediaMaps.productImages, defaultSku);
+              importedImages += await replaceImages({
+                productId: product.id,
+                variantId: null,
+                imageFiles: pImgs,
+                transaction,
+                warnings,
+                skuLabel: defaultSku,
+              });
+            }
+          }
         }
+        await transaction.commit();
+      } catch (txErr) {
+        await transaction.rollback();
+        throw txErr;
       }
-
       return {
         success: true,
         importedProducts,
@@ -591,64 +732,17 @@ class ProductImportService {
         importedImages,
         importedVideos,
         warnings,
-        debug: {
-          processImages,
-          mediaFilesIndexed: mediaIndex ? mediaIndex.byRel.size : 0,
-          isZip: !!isZip,
-          importType,
-        },
       };
     } finally {
-      if (extractDir && fs.existsSync(extractDir)) {
-        try {
-          fs.rmSync(extractDir, { recursive: true, force: true });
-        } catch (e) {
-          console.warn('Failed to cleanup extract dir:', e.message);
-        }
-      }
-    }
-  }
-
-  findExcelFile(rootDir) {
-    const preferred = [
-      'products.xls',
-      'products.xlsx',
-      'Products.xls',
-      'Products.xlsx',
-    ];
-    for (const name of preferred) {
-      const p = path.join(rootDir, name);
-      if (fs.existsSync(p)) return p;
-    }
-    let found = null;
-    function walk(dir) {
-      if (found) return;
-      let entries;
       try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const ent of entries) {
-        const full = path.join(dir, ent.name);
-        if (ent.isDirectory()) walk(full);
-        else if (/\.xlsx?$/i.test(ent.name) && /product/i.test(ent.name)) {
-          found = full;
-          return;
-        }
-      }
-      if (!found) {
-        for (const ent of entries) {
-          if (!ent.isDirectory() && /\.xlsx?$/i.test(ent.name)) {
-            found = path.join(dir, ent.name);
-            return;
-          }
-        }
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch (_) {}
+      if (file && file.path && fs.existsSync(file.path)) {
+        try {
+          fs.unlinkSync(file.path);
+        } catch (_) {}
       }
     }
-    walk(rootDir);
-    return found;
   }
 }
-
 module.exports = new ProductImportService();
