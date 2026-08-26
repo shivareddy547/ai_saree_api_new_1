@@ -1,13 +1,8 @@
 'use strict';
-/**
- * AI Video generation
- * - Images fill full frame width (portrait 720x1280)
- * - Image sequence loops until voice/audio ends
- * - Uploaded audio is muxed onto the Cloudinary video
- * Paths: ffmpeg (if present) OR pure-JS GIF → Cloudinary MP4 + audio overlay
- */
 const path = require('path');
 const fs = require('fs');
+const https = require('https');
+const http = require('http');
 const { execFile, exec } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
@@ -33,9 +28,17 @@ const CLOUD_API_SECRET =
   process.env.REACT_APP_CLOUDINARY_API_SECRET ||
   'cDqrjR6rxnH1kp4-5bZOJz3y9Hg';
 
-// Portrait (Reels / Shorts). Full-width fit.
-const OUT_W = 720;
-const OUT_H = 1280;
+const OUT_W = 1080;
+const OUT_H = 1920;
+
+const LANG_MAP = {
+  en: 'en',
+  hi: 'hi',
+  ta: 'ta',
+  te: 'te',
+  bn: 'bn',
+  mr: 'mr',
+};
 
 function ensureDirs() {
   [UPLOADS_DIR, VIDEOS_DIR, IMAGES_DIR, AUDIO_DIR].forEach((dir) => {
@@ -63,7 +66,6 @@ function getCloudinary() {
     });
     return cloudinary;
   } catch (e) {
-    console.error('cloudinary missing — npm install cloudinary');
     return null;
   }
 }
@@ -73,10 +75,6 @@ function resolveFfmpegPath() {
   try {
     const p = require('ffmpeg-static');
     if (p && typeof p === 'string') candidates.push(p);
-  } catch (_) {}
-  try {
-    const inst = require('@ffmpeg-installer/ffmpeg');
-    if (inst && inst.path) candidates.push(inst.path);
   } catch (_) {}
   candidates.push(
     '/usr/bin/ffmpeg',
@@ -102,9 +100,7 @@ async function checkFfmpeg() {
     try {
       await execFileAsync(bin, ['-version'], { timeout: 15000 });
       return bin;
-    } catch (e) {
-      console.warn('ffmpeg binary unusable:', bin, e.message);
-    }
+    } catch (_) {}
   }
   try {
     await execAsync('ffmpeg -version', { timeout: 8000 });
@@ -114,45 +110,123 @@ async function checkFfmpeg() {
   }
 }
 
-/**
- * Fit image to full WIDTH of frame; center-crop or pad height to OUT_H.
- */
-async function fitImageFullWidth(jimpImg) {
+function downloadToFile(url, destPath) {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(destPath);
+    const lib = url.startsWith('http://') ? http : https;
+    const req = lib.get(
+      url,
+      {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          Referer: 'https://translate.google.com/',
+          Accept: '*/*',
+        },
+        timeout: 60000,
+      },
+      (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          file.close();
+          try {
+            fs.unlinkSync(destPath);
+          } catch (_) {}
+          return downloadToFile(res.headers.location, destPath).then(resolve).catch(reject);
+        }
+        if (res.statusCode !== 200) {
+          file.close();
+          try {
+            fs.unlinkSync(destPath);
+          } catch (_) {}
+          return reject(new Error(`TTS download HTTP ${res.statusCode}`));
+        }
+        res.pipe(file);
+        file.on('finish', () => file.close(() => resolve(destPath)));
+      }
+    );
+    req.on('error', (err) => {
+      try {
+        fs.unlinkSync(destPath);
+      } catch (_) {}
+      reject(err);
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('TTS download timeout'));
+    });
+  });
+}
+
+async function synthesizeAiVoice(script, language, voiceGender, outputPath) {
+  const text = String(script || '').trim();
+  if (!text) throw new Error('AI voice script is empty');
+
+  let googleTTS;
+  try {
+    googleTTS = require('google-tts-api');
+  } catch (e) {
+    throw new Error('google-tts-api is required. Run: npm install google-tts-api');
+  }
+
+  const lang = LANG_MAP[(language || 'en').toLowerCase()] || 'en';
+  void voiceGender;
+
+  const urls = googleTTS.getAllAudioUrls(text, {
+    lang,
+    slow: false,
+    host: 'https://translate.google.com',
+    splitPunct: ',.!?।',
+  });
+  if (!urls || urls.length === 0) throw new Error('TTS produced no audio URLs');
+
+  const partPaths = [];
+  try {
+    for (let i = 0; i < urls.length; i++) {
+      const partPath = outputPath.replace(/\.mp3$/i, '') + `_part${i}.mp3`;
+      await downloadToFile(urls[i].url, partPath);
+      partPaths.push(partPath);
+    }
+    if (partPaths.length === 1) {
+      fs.copyFileSync(partPaths[0], outputPath);
+    } else {
+      fs.writeFileSync(outputPath, Buffer.concat(partPaths.map((p) => fs.readFileSync(p))));
+    }
+    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 100) {
+      throw new Error('TTS audio file is empty');
+    }
+    return outputPath;
+  } finally {
+    partPaths.forEach((p) => {
+      try {
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+      } catch (_) {}
+    });
+  }
+}
+
+async function fitImageCover(jimpImg) {
   const Jimp = require('jimp');
-  // Scale so width === OUT_W
-  jimpImg.resize(OUT_W, Jimp.AUTO);
-  const h = jimpImg.bitmap.height;
-  if (h > OUT_H) {
-    const y = Math.floor((h - OUT_H) / 2);
-    jimpImg.crop(0, y, OUT_W, OUT_H);
-  } else if (h < OUT_H) {
-    const canvas = new Jimp(OUT_W, OUT_H, 0x000000ff);
-    const y = Math.floor((OUT_H - h) / 2);
-    canvas.composite(jimpImg, 0, y);
-    return canvas;
+  jimpImg.cover(
+    OUT_W,
+    OUT_H,
+    Jimp.HORIZONTAL_ALIGN_CENTER | Jimp.VERTICAL_ALIGN_MIDDLE
+  );
+  if (jimpImg.bitmap.width !== OUT_W || jimpImg.bitmap.height !== OUT_H) {
+    jimpImg.resize(OUT_W, OUT_H);
   }
   return jimpImg;
 }
 
-/**
- * Build ordered frame list that lasts for totalDurationSec.
- * Cycles through all images until the voice/audio ends.
- */
 function buildFrameSchedule(imagePaths, secondsPerImage, totalDurationSec) {
   const per = Math.max(0.5, Number(secondsPerImage) || 5);
   const total = Math.max(per, Number(totalDurationSec) || per * imagePaths.length);
   const slots = Math.max(imagePaths.length, Math.ceil(total / per));
-  const delayMs = Math.round((total / slots) * 1000);
+  const delayMs = Math.max(200, Math.round((total / slots) * 1000));
   const frames = [];
-  for (let i = 0; i < slots; i++) {
-    frames.push(imagePaths[i % imagePaths.length]);
-  }
+  for (let i = 0; i < slots; i++) frames.push(imagePaths[i % imagePaths.length]);
   return { frames, delayMs, slots, totalDuration: total, perImage: total / slots };
 }
 
-/**
- * Upload local audio to Cloudinary (as video resource) and return duration + publicId.
- */
 async function uploadAudioToCloudinary(audioLocalPath, videoId) {
   const cloudinary = getCloudinary();
   if (!cloudinary) throw new Error('Cloudinary not configured');
@@ -171,15 +245,10 @@ async function uploadAudioToCloudinary(audioLocalPath, videoId) {
   };
 }
 
-/**
- * Mux audio onto a silent Cloudinary video using overlay layer_apply.
- * Returns permanent derived URL when possible.
- */
 async function muxAudioOnCloudinary(videoPublicId, audioPublicId) {
   const cloudinary = getCloudinary();
   if (!cloudinary) throw new Error('Cloudinary not configured');
 
-  // Try explicit eager derivation (stores a concrete derived asset URL)
   try {
     const explicit = await cloudinary.uploader.explicit(videoPublicId, {
       type: 'upload',
@@ -193,10 +262,13 @@ async function muxAudioOnCloudinary(videoPublicId, audioPublicId) {
       ],
       eager_async: false,
     });
-    if (explicit.eager && explicit.eager[0] && (explicit.eager[0].secure_url || explicit.eager[0].url)) {
+    if (
+      explicit.eager &&
+      explicit.eager[0] &&
+      (explicit.eager[0].secure_url || explicit.eager[0].url)
+    ) {
       return {
         url: explicit.eager[0].secure_url || explicit.eager[0].url,
-        publicId: videoPublicId,
         method: 'eager_overlay',
       };
     }
@@ -204,7 +276,6 @@ async function muxAudioOnCloudinary(videoPublicId, audioPublicId) {
     console.warn('eager audio mux failed:', e.message);
   }
 
-  // Fallback: delivery URL with audio underlay transformation
   const url = cloudinary.url(videoPublicId, {
     resource_type: 'video',
     secure: true,
@@ -216,68 +287,31 @@ async function muxAudioOnCloudinary(videoPublicId, audioPublicId) {
       },
     ],
   });
-  return { url, publicId: videoPublicId, method: 'delivery_overlay' };
+  return { url, method: 'delivery_overlay' };
 }
 
 async function uploadSilentVideoFromGif(gifPath, videoId) {
   const cloudinary = getCloudinary();
   if (!cloudinary) throw new Error('Cloudinary not configured');
-
-  try {
-    const result = await cloudinary.uploader.upload(gifPath, {
-      resource_type: 'video',
-      folder: 'ai_videos',
-      public_id: `ai_video_${videoId}`,
-      overwrite: true,
-      invalidate: true,
-      format: 'mp4',
-    });
-    return {
-      url: result.secure_url || result.url,
-      publicId: result.public_id,
-      duration: result.duration,
-      format: result.format || 'mp4',
-    };
-  } catch (e) {
-    console.warn('video upload of GIF failed, image+f_mp4:', e.message);
-    const imgResult = await cloudinary.uploader.upload(gifPath, {
-      resource_type: 'image',
-      folder: 'ai_videos',
-      public_id: `ai_video_${videoId}_gif`,
-      overwrite: true,
-      invalidate: true,
-    });
-    const mp4Url = cloudinary.url(imgResult.public_id, {
-      resource_type: 'image',
-      format: 'mp4',
-      secure: true,
-    });
-    return {
-      url: mp4Url,
-      publicId: imgResult.public_id,
-      duration: null,
-      format: 'mp4',
-      asImage: true,
-    };
-  }
+  const result = await cloudinary.uploader.upload(gifPath, {
+    resource_type: 'video',
+    folder: 'ai_videos',
+    public_id: `ai_video_${videoId}`,
+    overwrite: true,
+    invalidate: true,
+    format: 'mp4',
+  });
+  return {
+    url: result.secure_url || result.url,
+    publicId: result.public_id,
+    duration: result.duration,
+    format: result.format || 'mp4',
+  };
 }
 
-/**
- * Pure-JS GIF from images, full-width frames, looping until total duration.
- */
 async function buildAnimatedGif(imageUrls, secondsPerImage, totalDurationSec, outputGifPath) {
-  let Jimp;
-  let GIFEncoder;
-  try {
-    Jimp = require('jimp');
-  } catch (e) {
-    throw new Error('jimp is required. Run: npm install jimp@0.22.12');
-  }
-  try {
-    GIFEncoder = require('gif-encoder-2');
-  } catch (e) {
-    throw new Error('gif-encoder-2 is required. Run: npm install gif-encoder-2');
-  }
+  const Jimp = require('jimp');
+  const GIFEncoder = require('gif-encoder-2');
 
   const localImages = imageUrls
     .map((u) => resolveLocalPath(u))
@@ -285,7 +319,6 @@ async function buildAnimatedGif(imageUrls, secondsPerImage, totalDurationSec, ou
   if (localImages.length === 0) throw new Error('No local image files found');
 
   const schedule = buildFrameSchedule(localImages, secondsPerImage, totalDurationSec);
-
   const encoder = new GIFEncoder(OUT_W, OUT_H, 'octree', true);
   encoder.setDelay(schedule.delayMs);
   encoder.setRepeat(0);
@@ -294,13 +327,11 @@ async function buildAnimatedGif(imageUrls, secondsPerImage, totalDurationSec, ou
 
   for (const imgPath of schedule.frames) {
     let img = await Jimp.read(imgPath);
-    img = await fitImageFullWidth(img);
+    img = await fitImageCover(img);
     encoder.addFrame(img.bitmap.data);
   }
   encoder.finish();
-  const buffer = encoder.out.getData();
-  fs.writeFileSync(outputGifPath, buffer);
-
+  fs.writeFileSync(outputGifPath, encoder.out.getData());
   if (!fs.existsSync(outputGifPath) || fs.statSync(outputGifPath).size < 100) {
     throw new Error('GIF generation produced empty file');
   }
@@ -308,7 +339,8 @@ async function buildAnimatedGif(imageUrls, secondsPerImage, totalDurationSec, ou
 }
 
 /**
- * ffmpeg path: full-width scale, loop images until audio ends, mux audio.
+ * ffmpeg slideshow with COVER scale + optional audio.
+ * CRITICAL: all -i inputs MUST come before -vf / codec options.
  */
 async function buildSlideshowWithFfmpeg(
   imageUrls,
@@ -338,19 +370,21 @@ async function buildSlideshowWithFfmpeg(
   lines.push(`file '${last}'`);
   fs.writeFileSync(listFile, lines.join('\n') + '\n');
 
-  // scale to full WIDTH, crop/pad to 720x1280
+  // COVER: increase + crop (no letterboxing)
   const vf =
     `scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase,` +
     `crop=${OUT_W}:${OUT_H},setsar=1,format=yuv420p`;
 
-  const args = [
-    '-y',
-    '-f',
-    'concat',
-    '-safe',
-    '0',
-    '-i',
-    listFile,
+  const hasAudio = !!(audioLocalPath && fs.existsSync(audioLocalPath));
+
+  // Correct order: global opts → all inputs → filters/codecs → output
+  const args = ['-y', '-f', 'concat', '-safe', '0', '-i', listFile];
+
+  if (hasAudio) {
+    args.push('-i', audioLocalPath);
+  }
+
+  args.push(
     '-vf',
     vf,
     '-c:v',
@@ -360,12 +394,14 @@ async function buildSlideshowWithFfmpeg(
     '-r',
     '30',
     '-movflags',
-    '+faststart',
-  ];
+    '+faststart'
+  );
 
-  if (audioLocalPath && fs.existsSync(audioLocalPath)) {
-    args.push('-i', audioLocalPath, '-c:a', 'aac', '-shortest');
+  if (hasAudio) {
+    // Map video from input 0, audio from input 1
+    args.push('-map', '0:v:0', '-map', '1:a:0', '-c:a', 'aac', '-shortest');
   }
+
   args.push(outputPath);
 
   try {
@@ -373,6 +409,9 @@ async function buildSlideshowWithFfmpeg(
       timeout: 240000,
       maxBuffer: 30 * 1024 * 1024,
     });
+  } catch (err) {
+    const msg = (err && (err.stderr || err.message)) || String(err);
+    throw new Error('ffmpeg failed: ' + msg.slice(0, 500));
   } finally {
     try {
       if (fs.existsSync(listFile)) fs.unlinkSync(listFile);
@@ -383,6 +422,49 @@ async function buildSlideshowWithFfmpeg(
     throw new Error('ffmpeg produced empty output');
   }
   return { path: outputPath, schedule };
+}
+
+async function resolveAudioFile(payload, videoId) {
+  const { audioMode, audioUrl, audioScript, audioLanguage, voiceGender } = payload;
+
+  if (audioMode === 'upload' && audioUrl) {
+    const local = resolveLocalPath(audioUrl);
+    if (local && fs.existsSync(local)) return { localPath: local, source: 'upload' };
+  }
+
+  if (audioMode === 'ai' && audioScript && String(audioScript).trim()) {
+    ensureDirs();
+    const ttsPath = path.join(AUDIO_DIR, `tts_${videoId}.mp3`);
+    await synthesizeAiVoice(
+      audioScript,
+      audioLanguage || 'en',
+      voiceGender || 'female',
+      ttsPath
+    );
+    return {
+      localPath: ttsPath,
+      source: 'ai_tts',
+      publicUrl: `/uploads/audio/tts_${videoId}.mp3`,
+    };
+  }
+
+  if (audioUrl) {
+    const local = resolveLocalPath(audioUrl);
+    if (local && fs.existsSync(local)) return { localPath: local, source: 'upload' };
+  }
+  return { localPath: null, source: null };
+}
+
+async function generateTtsBuffer(script, language, voiceGender) {
+  ensureDirs();
+  const id = uuidv4();
+  const ttsPath = path.join(AUDIO_DIR, `tts_preview_${id}.mp3`);
+  await synthesizeAiVoice(script, language || 'en', voiceGender || 'female', ttsPath);
+  const buffer = fs.readFileSync(ttsPath);
+  try {
+    fs.unlinkSync(ttsPath);
+  } catch (_) {}
+  return { buffer, mime: 'audio/mpeg' };
 }
 
 const createAndGenerate = async (userId, payload) => {
@@ -429,10 +511,8 @@ const createAndGenerate = async (userId, payload) => {
 
   const videoId = record.id;
   const perImage = record.durationSeconds;
-  const outputFilename = `video_${videoId}.mp4`;
-  const outputPath = path.join(VIDEOS_DIR, outputFilename);
+  const outputPath = path.join(VIDEOS_DIR, `video_${videoId}.mp4`);
   const gifPath = path.join(VIDEOS_DIR, `video_${videoId}.gif`);
-  const audioLocal = audioUrl ? resolveLocalPath(audioUrl) : null;
 
   try {
     let finalUrl = null;
@@ -441,8 +521,26 @@ const createAndGenerate = async (userId, payload) => {
     let extraMeta = {};
     let audioPublicId = null;
     let audioDuration = null;
+    let audioLocal = null;
 
-    // Upload audio first (if present) to get real duration for image looping
+    try {
+      const resolved = await resolveAudioFile(
+        { audioMode, audioUrl, audioScript, audioLanguage, voiceGender },
+        videoId
+      );
+      audioLocal = resolved.localPath;
+      extraMeta.audioSource = resolved.source;
+      if (resolved.publicUrl) {
+        await record.update({ audioUrl: resolved.publicUrl });
+        extraMeta.generatedAudioUrl = resolved.publicUrl;
+      }
+    } catch (ttsErr) {
+      if (audioMode === 'ai') {
+        throw new Error('AI voice generation failed: ' + (ttsErr.message || ttsErr));
+      }
+      extraMeta.audioError = ttsErr.message;
+    }
+
     if (audioLocal && fs.existsSync(audioLocal)) {
       try {
         const audioUp = await uploadAudioToCloudinary(audioLocal, videoId);
@@ -450,23 +548,22 @@ const createAndGenerate = async (userId, payload) => {
         audioDuration = audioUp.duration;
         extraMeta.audioPublicId = audioPublicId;
         extraMeta.audioDuration = audioDuration;
-        extraMeta.audioUrl = audioUp.url;
+        extraMeta.cloudinaryAudioUrl = audioUp.url;
       } catch (ae) {
-        console.warn('Audio upload failed:', ae.message);
-        extraMeta.audioError = ae.message;
+        console.warn('Audio Cloudinary upload failed (will still mux locally):', ae.message);
+        extraMeta.audioUploadError = ae.message;
       }
     }
 
-    // Total timeline: prefer audio length so images keep rotating until voice ends
     const totalDuration =
-      (audioDuration && audioDuration > 0
+      audioDuration && audioDuration > 0
         ? audioDuration
-        : perImage * Math.max(1, imageUrls.length));
+        : perImage * Math.max(1, imageUrls.length);
 
     const ffmpegBin = await checkFfmpeg();
 
     if (ffmpegBin) {
-      const built = await buildSlideshowWithFfmpeg(
+      await buildSlideshowWithFfmpeg(
         imageUrls,
         audioLocal && fs.existsSync(audioLocal) ? audioLocal : null,
         outputPath,
@@ -474,71 +571,37 @@ const createAndGenerate = async (userId, payload) => {
         totalDuration,
         ffmpegBin
       );
-      engine = audioLocal ? 'ffmpeg+audio' : 'ffmpeg';
-      extraMeta.schedule = {
-        slots: built.schedule.slots,
-        perImage: built.schedule.perImage,
-        totalDuration: built.schedule.totalDuration,
-      };
 
-      try {
-        const cloudinary = getCloudinary();
-        const uploaded = await cloudinary.uploader.upload(outputPath, {
-          resource_type: 'video',
-          folder: 'ai_videos',
-          public_id: `ai_video_${videoId}`,
-          overwrite: true,
-          invalidate: true,
-        });
-        finalUrl = uploaded.secure_url || uploaded.url;
-        cloudinaryPublicId = uploaded.public_id;
-        engine = audioLocal ? 'ffmpeg+audio+cloudinary' : 'ffmpeg+cloudinary';
-        extraMeta.duration = uploaded.duration;
-        extraMeta.format = uploaded.format;
-        extraMeta.localPath = `/uploads/videos/${outputFilename}`;
-      } catch (upErr) {
-        finalUrl = `/uploads/videos/${outputFilename}`;
-        extraMeta.localPath = finalUrl;
-        extraMeta.cloudinaryError = upErr.message || String(upErr);
-      }
+      const cloudinary = getCloudinary();
+      if (!cloudinary) throw new Error('Cloudinary not configured');
+
+      const uploaded = await cloudinary.uploader.upload(outputPath, {
+        resource_type: 'video',
+        folder: 'ai_videos',
+        public_id: `ai_video_${videoId}`,
+        overwrite: true,
+        invalidate: true,
+      });
+      finalUrl = uploaded.secure_url || uploaded.url;
+      cloudinaryPublicId = uploaded.public_id;
+      engine = audioLocal ? 'ffmpeg+audio+cloudinary' : 'ffmpeg+cloudinary';
+      extraMeta.duration = uploaded.duration;
+      extraMeta.format = uploaded.format;
+      extraMeta.localPath = `/uploads/videos/video_${videoId}.mp4`;
     } else {
-      // Pure JS path: GIF frames looped for full audio duration
-      const built = await buildAnimatedGif(
-        imageUrls,
-        perImage,
-        totalDuration,
-        gifPath
-      );
-      extraMeta.schedule = {
-        slots: built.schedule.slots,
-        perImage: built.schedule.perImage,
-        totalDuration: built.schedule.totalDuration,
-        delayMs: built.schedule.delayMs,
-      };
-
+      await buildAnimatedGif(imageUrls, perImage, totalDuration, gifPath);
       const silent = await uploadSilentVideoFromGif(gifPath, videoId);
       finalUrl = silent.url;
       cloudinaryPublicId = silent.publicId;
-      engine = silent.asImage ? 'gif+cloudinary_f_mp4' : 'gif+cloudinary_video';
+      engine = 'gif+cloudinary_video';
       extraMeta.duration = silent.duration;
       extraMeta.format = silent.format;
 
-      // Mux uploaded voice onto the silent video
-      if (audioPublicId && cloudinaryPublicId && !silent.asImage) {
-        try {
-          const muxed = await muxAudioOnCloudinary(cloudinaryPublicId, audioPublicId);
-          finalUrl = muxed.url;
-          engine = 'gif+cloudinary+audio';
-          extraMeta.audioMuxMethod = muxed.method;
-        } catch (muxErr) {
-          console.warn('Audio mux failed:', muxErr.message);
-          extraMeta.audioMuxError = muxErr.message;
-        }
-      } else if (audioLocal && !audioPublicId) {
-        extraMeta.audioMuxError = 'Audio file present but Cloudinary audio upload failed';
-      } else if (audioMode === 'ai' && !audioLocal) {
-        extraMeta.audioNote =
-          'AI voice-over script was provided but no audio file was generated/uploaded. Upload an audio file or enable TTS.';
+      if (audioPublicId && cloudinaryPublicId) {
+        const muxed = await muxAudioOnCloudinary(cloudinaryPublicId, audioPublicId);
+        finalUrl = muxed.url;
+        engine = 'gif+cloudinary+audio';
+        extraMeta.audioMuxMethod = muxed.method;
       }
     }
 
@@ -548,11 +611,7 @@ const createAndGenerate = async (userId, payload) => {
       status: 'completed',
       videoUrl: finalUrl,
       thumbnailUrl: imageUrls[0],
-      errorMessage: extraMeta.cloudinaryError
-        ? `Cloudinary warning: ${extraMeta.cloudinaryError}`
-        : extraMeta.audioMuxError
-        ? `Video OK; audio mux warning: ${extraMeta.audioMuxError}`
-        : null,
+      errorMessage: null,
       metadata: {
         engine,
         frameCount: imageUrls.length,
@@ -560,7 +619,6 @@ const createAndGenerate = async (userId, payload) => {
         ...extraMeta,
       },
     });
-
     return record.reload();
   } catch (error) {
     console.error('Video generation error:', error);
@@ -573,6 +631,49 @@ const createAndGenerate = async (userId, payload) => {
     err.status = 500;
     throw err;
   }
+};
+
+const saveClientGenerated = async (userId, data) => {
+  const {
+    title,
+    videoUrl,
+    thumbnailUrl,
+    imageUrls = [],
+    audioMode = 'none',
+    audioUrl = null,
+    audioScript = null,
+    audioLanguage = 'en',
+    voiceGender = 'female',
+    durationSeconds = 5,
+    cloudinaryPublicId = null,
+    metadata = {},
+  } = data;
+
+  if (!videoUrl) {
+    const err = new Error('videoUrl is required');
+    err.status = 400;
+    throw err;
+  }
+
+  return GeneratedVideo.create({
+    userId,
+    title: title || 'AI Generated Video',
+    videoUrl,
+    thumbnailUrl: thumbnailUrl || (imageUrls[0] || null),
+    imageUrls,
+    audioMode,
+    audioUrl,
+    audioScript,
+    audioLanguage,
+    voiceGender,
+    durationSeconds,
+    status: 'completed',
+    metadata: {
+      engine: 'client_mediarecorder+cloudinary',
+      cloudinaryPublicId,
+      ...metadata,
+    },
+  });
 };
 
 const getById = async (userId, id) => {
@@ -604,15 +705,13 @@ const listByUser = async (userId, { page = 1, limit = 20 } = {}) => {
 };
 
 const reuploadToCloudinary = async (userId, id) => {
-  // Re-run generation pipeline for this record (images + audio)
   const video = await GeneratedVideo.findOne({ where: { id, userId } });
   if (!video) {
     const err = new Error('Video not found');
     err.status = 404;
     throw err;
   }
-  // Soft-delete old row state by regenerating via createAndGenerate-like path
-  const payload = {
+  const result = await createAndGenerate(userId, {
     title: video.title,
     imageUrls: video.imageUrls || [],
     audioMode: video.audioMode || 'none',
@@ -621,83 +720,20 @@ const reuploadToCloudinary = async (userId, id) => {
     audioLanguage: video.audioLanguage || 'en',
     voiceGender: video.voiceGender || 'female',
     durationSeconds: video.durationSeconds || 5,
-  };
-
-  ensureDirs();
-  const videoId = video.id;
-  const imageUrls = payload.imageUrls;
-  const perImage = payload.durationSeconds;
-  const outputPath = path.join(VIDEOS_DIR, `video_${videoId}.mp4`);
-  const gifPath = path.join(VIDEOS_DIR, `video_${videoId}.gif`);
-  const audioLocal = payload.audioUrl ? resolveLocalPath(payload.audioUrl) : null;
-
-  let audioPublicId = null;
-  let audioDuration = null;
-  let extraMeta = {};
-
-  if (audioLocal && fs.existsSync(audioLocal)) {
-    const audioUp = await uploadAudioToCloudinary(audioLocal, videoId);
-    audioPublicId = audioUp.publicId;
-    audioDuration = audioUp.duration;
-    extraMeta.audioPublicId = audioPublicId;
-    extraMeta.audioDuration = audioDuration;
-  }
-
-  const totalDuration =
-    audioDuration && audioDuration > 0
-      ? audioDuration
-      : perImage * Math.max(1, imageUrls.length);
-
-  const ffmpegBin = await checkFfmpeg();
-  let finalUrl;
-  let cloudinaryPublicId;
-  let engine;
-
-  if (ffmpegBin) {
-    await buildSlideshowWithFfmpeg(
-      imageUrls,
-      audioLocal && fs.existsSync(audioLocal) ? audioLocal : null,
-      outputPath,
-      perImage,
-      totalDuration,
-      ffmpegBin
-    );
-    const cloudinary = getCloudinary();
-    const uploaded = await cloudinary.uploader.upload(outputPath, {
-      resource_type: 'video',
-      folder: 'ai_videos',
-      public_id: `ai_video_${videoId}`,
-      overwrite: true,
-    });
-    finalUrl = uploaded.secure_url || uploaded.url;
-    cloudinaryPublicId = uploaded.public_id;
-    engine = 'ffmpeg+cloudinary';
-  } else {
-    await buildAnimatedGif(imageUrls, perImage, totalDuration, gifPath);
-    const silent = await uploadSilentVideoFromGif(gifPath, videoId);
-    finalUrl = silent.url;
-    cloudinaryPublicId = silent.publicId;
-    engine = 'gif+cloudinary';
-    if (audioPublicId && !silent.asImage) {
-      const muxed = await muxAudioOnCloudinary(cloudinaryPublicId, audioPublicId);
-      finalUrl = muxed.url;
-      engine = 'gif+cloudinary+audio';
-      extraMeta.audioMuxMethod = muxed.method;
-    }
-  }
-
-  await video.update({
-    status: 'completed',
-    videoUrl: finalUrl,
-    errorMessage: null,
-    metadata: {
-      ...(video.metadata || {}),
-      engine,
-      frameCount: imageUrls.length,
-      cloudinaryPublicId,
-      ...extraMeta,
-    },
   });
+  await video.update({
+    status: result.status,
+    videoUrl: result.videoUrl,
+    thumbnailUrl: result.thumbnailUrl,
+    audioUrl: result.audioUrl,
+    errorMessage: result.errorMessage,
+    metadata: result.metadata,
+  });
+  if (result.id !== video.id) {
+    try {
+      await GeneratedVideo.destroy({ where: { id: result.id } });
+    } catch (_) {}
+  }
   return video.reload();
 };
 
@@ -714,18 +750,8 @@ const remove = async (userId, id) => {
     if (cloudinary) {
       try {
         await cloudinary.uploader.destroy(publicId, { resource_type: 'video' });
-      } catch (_) {
-        try {
-          await cloudinary.uploader.destroy(publicId, { resource_type: 'image' });
-        } catch (_) {}
-      }
+      } catch (_) {}
     }
-  }
-  if (video.metadata && video.metadata.localPath) {
-    const filePath = resolveLocalPath(video.metadata.localPath);
-    try {
-      if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    } catch (_) {}
   }
   await video.destroy();
   return true;
@@ -733,6 +759,8 @@ const remove = async (userId, id) => {
 
 module.exports = {
   createAndGenerate,
+  saveClientGenerated,
+  generateTtsBuffer,
   getById,
   listByUser,
   remove,
