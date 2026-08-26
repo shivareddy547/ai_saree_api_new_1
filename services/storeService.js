@@ -1,5 +1,6 @@
-const { Product, ProductVariant, ProductImage, Category, PageView, Op } = require('../models');
-const { Sequelize } = require('sequelize');
+const { Product, ProductVariant, ProductImage, Category, PageView, PageViewLog } = require('../models');
+const { Sequelize, Op } = require('sequelize');
+
 /**
  * Public store product listing – only ACTIVE (isActive = true) products.
  * Soft-deleted products (isActive = false) are never returned.
@@ -91,6 +92,7 @@ const getStoreProducts = async (filters = {}) => {
     },
   };
 };
+
 const getStoreProductById = async (id) => {
   const product = await Product.findOne({
     where: { id, isActive: true },
@@ -119,6 +121,7 @@ const getStoreProductById = async (id) => {
   });
   return product;
 };
+
 const getAutocompleteSuggestions = async (q) => {
   if (!q || !q.trim()) return [];
   const products = await Product.findAll({
@@ -139,6 +142,7 @@ const getAutocompleteSuggestions = async (q) => {
     sku: p.defaultSku,
   }));
 };
+
 const getHomeSections = async () => {
   const baseWhere = { isActive: true };
   const [featured, bestSellers, newArrivals, premium] = await Promise.all([
@@ -186,13 +190,62 @@ const getHomeSections = async () => {
     premium,
   };
 };
+
+/**
+ * Resolve city / region / country from IP via free ip-api.com.
+ * Fails silently (returns nulls) for private IPs or network errors.
+ */
+const lookupGeoFromIp = async (ip) => {
+  const empty = { city: null, region: null, country: null, countryCode: null };
+  if (!ip) return empty;
+  const normalized = String(ip).replace(/^::ffff:/, '');
+  if (
+    normalized === '127.0.0.1' ||
+    normalized === '::1' ||
+    normalized.startsWith('192.168.') ||
+    normalized.startsWith('10.') ||
+    normalized.startsWith('172.16.') ||
+    normalized.startsWith('172.17.') ||
+    normalized.startsWith('172.18.') ||
+    normalized.startsWith('172.19.') ||
+    normalized.startsWith('172.2') ||
+    normalized.startsWith('172.30.') ||
+    normalized.startsWith('172.31.')
+  ) {
+    return empty;
+  }
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(
+      `http://ip-api.com/json/${encodeURIComponent(normalized)}?fields=status,country,countryCode,regionName,city`,
+      { signal: controller.signal }
+    );
+    clearTimeout(timeout);
+    if (!res.ok) return empty;
+    const data = await res.json();
+    if (data && data.status === 'success') {
+      return {
+        city: data.city || null,
+        region: data.regionName || null,
+        country: data.country || null,
+        countryCode: data.countryCode || null,
+      };
+    }
+  } catch (e) {
+    // Geo lookup must never break page-view tracking
+  }
+  return empty;
+};
+
 /**
  * Track a page view for any /store/* path.
  * - Always increments totalViews
  * - Increments guestViews when the visitor is not logged in
  * - When a provider query param is present, increments the corresponding key in providerViews
+ * - Stores IP address and geolocation in page_view_logs
  */
-const trackPageView = async ({ path, isGuest, provider }) => {
+const trackPageView = async ({ path, isGuest, provider, ipAddress, userAgent }) => {
   if (!path || typeof path !== 'string' || !path.startsWith('/store')) {
     const err = new Error('Invalid path. Must start with /store');
     err.status = 400;
@@ -221,22 +274,78 @@ const trackPageView = async ({ path, isGuest, provider }) => {
     const next = { ...current, [key]: (current[key] || 0) + 1 };
     await pageView.update({ providerViews: next });
   }
+
+  // Persist individual visit with IP + location (non-blocking on geo failure)
+  let geo = { city: null, region: null, country: null, countryCode: null };
+  try {
+    geo = await lookupGeoFromIp(ipAddress);
+  } catch (e) {
+    // ignore
+  }
+  try {
+    if (PageViewLog) {
+      await PageViewLog.create({
+        path: normalizedPath,
+        ipAddress: ipAddress || null,
+        city: geo.city,
+        region: geo.region,
+        country: geo.country,
+        countryCode: geo.countryCode,
+        isGuest: !!isGuest,
+        provider:
+          provider && typeof provider === 'string' && provider.trim()
+            ? provider.trim().toLowerCase()
+            : null,
+        userAgent: userAgent || null,
+      });
+    }
+  } catch (e) {
+    console.error('Failed to save page view log:', e.message || e);
+  }
+
   await pageView.reload();
   return {
     path: pageView.path,
     totalViews: pageView.totalViews,
     guestViews: pageView.guestViews,
     providerViews: pageView.providerViews,
+    ipAddress: ipAddress || null,
+    city: geo.city,
+    region: geo.region,
+    country: geo.country,
+    countryCode: geo.countryCode,
   };
 };
+
 /**
- * List all tracked page views with derived registered-user count
- * and a summed provider total for easy UI display.
+ * List all tracked page views with derived registered-user count,
+ * summed provider total, and last known IP / location for that path.
  */
 const getPageViews = async () => {
   const rows = await PageView.findAll({
     order: [['totalViews', 'DESC']],
   });
+
+  // Latest log per path for last IP / location
+  const paths = rows.map((r) => r.path);
+  const latestByPath = {};
+  if (paths.length > 0 && PageViewLog) {
+    try {
+      const logs = await PageViewLog.findAll({
+        where: { path: { [Op.in]: paths } },
+        order: [['createdAt', 'DESC']],
+      });
+      for (const log of logs) {
+        if (!latestByPath[log.path]) {
+          latestByPath[log.path] = log;
+        }
+      }
+    } catch (e) {
+      // Table may not exist yet if migration not applied — still return aggregates
+      console.error('Failed to load page view logs:', e.message || e);
+    }
+  }
+
   return rows.map((row) => {
     const providerViews = row.providerViews || {};
     const providerTotal = Object.values(providerViews).reduce(
@@ -244,6 +353,10 @@ const getPageViews = async () => {
       0
     );
     const registeredViews = Math.max(0, (row.totalViews || 0) - (row.guestViews || 0));
+    const last = latestByPath[row.path] || null;
+    const locationParts = last
+      ? [last.city, last.region, last.country].filter(Boolean)
+      : [];
     return {
       id: row.id,
       path: row.path,
@@ -252,11 +365,19 @@ const getPageViews = async () => {
       registeredViews,
       providerViews,
       providerTotal,
+      lastIpAddress: last ? last.ipAddress : null,
+      lastCity: last ? last.city : null,
+      lastRegion: last ? last.region : null,
+      lastCountry: last ? last.country : null,
+      lastCountryCode: last ? last.countryCode : null,
+      lastLocation: locationParts.length ? locationParts.join(', ') : null,
+      lastViewedAt: last ? last.createdAt : null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
   });
 };
+
 module.exports = {
   getStoreProducts,
   getStoreProductById,

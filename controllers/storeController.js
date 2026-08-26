@@ -1,6 +1,23 @@
 const storeService = require('../services/storeService');
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET || 'default-dev-secret';
+const getClientIp = (req) => {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded && typeof forwarded === 'string') {
+    return forwarded.split(',')[0].trim();
+  }
+  if (req.headers['x-real-ip']) {
+    return String(req.headers['x-real-ip']).trim();
+  }
+  if (req.ip) {
+    return req.ip.replace(/^::ffff:/, '');
+  }
+  const remote =
+    req.connection?.remoteAddress ||
+    req.socket?.remoteAddress ||
+    null;
+  return remote ? String(remote).replace(/^::ffff:/, '') : null;
+};
 const getProducts = async (req, res, next) => {
   try {
     const result = await storeService.getStoreProducts(req.query);
@@ -57,6 +74,7 @@ const getHomeSections = async (req, res, next) => {
  * POST /api/store/track-page-view
  * Body: { path: string, provider?: string }
  * Auth is optional – presence of a valid Bearer token means the viewer is logged in.
+ * IP and geolocation are captured server-side from the request.
  */
 const trackPageView = async (req, res, next) => {
   try {
@@ -78,10 +96,14 @@ const trackPageView = async (req, res, next) => {
         isGuest = true;
       }
     }
+    const ipAddress = getClientIp(req);
+    const userAgent = req.headers['user-agent'] || null;
     const data = await storeService.trackPageView({
       path,
       isGuest,
       provider: provider || null,
+      ipAddress,
+      userAgent,
     });
     res.json({
       success: true,
@@ -93,7 +115,8 @@ const trackPageView = async (req, res, next) => {
 };
 /**
  * GET /api/store/page-views
- * Returns all tracked pages with guest / registered / provider counts.
+ * Returns all tracked pages with guest / registered / provider counts
+ * and last known IP / location per path.
  * Requires authentication (admin panel).
  */
 const getPageViews = async (req, res, next) => {
