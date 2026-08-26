@@ -79,6 +79,7 @@ app.use('/api/user-voices', require('./routes/userVoiceRoutes'));
 app.use('/api/user', require('./routes/userRoutes'));
 app.use('/api/addresses', require('./routes/addressRoutes'));
 app.use('/api/pickup-locations', require('./routes/pickupLocationRoutes'));
+app.use('/api/ai-videos', require('./routes/aiVideoRoutes'));
 app.get('/api-docs', (req, res) => {
   const indexPath = path.join(__dirname, 'public', 'api-docs', 'index.html');
   if (fs.existsSync(indexPath)) {
