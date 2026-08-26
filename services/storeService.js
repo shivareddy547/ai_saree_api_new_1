@@ -1,6 +1,5 @@
 const { Product, ProductVariant, ProductImage, Category, PageView, PageViewLog } = require('../models');
 const { Sequelize, Op } = require('sequelize');
-
 /**
  * Public store product listing – only ACTIVE (isActive = true) products.
  * Soft-deleted products (isActive = false) are never returned.
@@ -92,7 +91,6 @@ const getStoreProducts = async (filters = {}) => {
     },
   };
 };
-
 const getStoreProductById = async (id) => {
   const product = await Product.findOne({
     where: { id, isActive: true },
@@ -121,7 +119,6 @@ const getStoreProductById = async (id) => {
   });
   return product;
 };
-
 const getAutocompleteSuggestions = async (q) => {
   if (!q || !q.trim()) return [];
   const products = await Product.findAll({
@@ -142,7 +139,6 @@ const getAutocompleteSuggestions = async (q) => {
     sku: p.defaultSku,
   }));
 };
-
 const getHomeSections = async () => {
   const baseWhere = { isActive: true };
   const [featured, bestSellers, newArrivals, premium] = await Promise.all([
@@ -190,7 +186,6 @@ const getHomeSections = async () => {
     premium,
   };
 };
-
 /**
  * Resolve city / region / country from IP via free ip-api.com.
  * Fails silently (returns nulls) for private IPs or network errors.
@@ -237,7 +232,6 @@ const lookupGeoFromIp = async (ip) => {
   }
   return empty;
 };
-
 /**
  * Track a page view for any /store/* path.
  * - Always increments totalViews
@@ -274,7 +268,6 @@ const trackPageView = async ({ path, isGuest, provider, ipAddress, userAgent }) 
     const next = { ...current, [key]: (current[key] || 0) + 1 };
     await pageView.update({ providerViews: next });
   }
-
   // Persist individual visit with IP + location (non-blocking on geo failure)
   let geo = { city: null, region: null, country: null, countryCode: null };
   try {
@@ -302,7 +295,6 @@ const trackPageView = async ({ path, isGuest, provider, ipAddress, userAgent }) 
   } catch (e) {
     console.error('Failed to save page view log:', e.message || e);
   }
-
   await pageView.reload();
   return {
     path: pageView.path,
@@ -316,17 +308,112 @@ const trackPageView = async ({ path, isGuest, provider, ipAddress, userAgent }) 
     countryCode: geo.countryCode,
   };
 };
-
 /**
  * List all tracked page views with derived registered-user count,
  * summed provider total, and last known IP / location for that path.
+ * Optional filters: path (ilike), provider (key in providerViews), minViews,
+ * startDate / endDate (restrict to paths that have logs in range).
+ *
+ * Filtering strategy:
+ * - If both startDate and endDate are absent, provider filter is applied directly
+ *   on the providerViews JSONB column (checks if the key exists).
+ * - If date range is provided, provider filter is applied via PageViewLog
+ *   (logs must have that provider and be within the date range).
+ * - Path filter is always applied (ilike on page_views.path).
+ * - minViews is applied on totalViews.
  */
-const getPageViews = async () => {
+const getPageViews = async (filters = {}) => {
+  const { path, provider, minViews, startDate, endDate } = filters;
+  const pageViewWhere = {};
+  // minViews filter
+  if (minViews !== undefined && minViews !== null && minViews !== '') {
+    const n = parseInt(minViews, 10);
+    if (!isNaN(n) && n >= 0) {
+      pageViewWhere.totalViews = { [Op.gte]: n };
+    }
+  }
+  // path filter
+  if (path && path.trim()) {
+    pageViewWhere.path = { [Op.iLike]: `%${path.trim()}%` };
+  }
+  // Determine if we need to use logs for provider+date
+  const useLogFilter = !!(startDate || endDate);
+  let pathFilter = null;
+  if (useLogFilter) {
+    // Build log where for date range (and optionally provider)
+    const logWhere = {};
+    if (startDate) {
+      const start = new Date(startDate);
+      if (!isNaN(start.getTime())) {
+        logWhere.createdAt = logWhere.createdAt || {};
+        logWhere.createdAt[Op.gte] = start;
+      }
+    }
+    if (endDate) {
+      const end = new Date(endDate);
+      if (!isNaN(end.getTime())) {
+        end.setHours(23, 59, 59, 999);
+        logWhere.createdAt = logWhere.createdAt || {};
+        logWhere.createdAt[Op.lte] = end;
+      }
+    }
+    // If provider is provided, we need to filter logs by provider as well
+    if (provider && provider.trim()) {
+      logWhere.provider = provider.trim().toLowerCase();
+    }
+    // Also apply path filter to logs to narrow down
+    if (path && path.trim()) {
+      logWhere.path = { [Op.iLike]: `%${path.trim()}%` };
+    }
+    if (PageViewLog) {
+      try {
+        const matchingLogs = await PageViewLog.findAll({
+          where: logWhere,
+          attributes: ['path'],
+          group: ['path'],
+          raw: true,
+        });
+        pathFilter = matchingLogs.map((l) => l.path);
+        if (pathFilter.length === 0) {
+          return [];
+        }
+      } catch (e) {
+        console.error('Failed to filter page view logs:', e.message || e);
+        // If log query fails, we cannot filter by date, so return empty if date provided
+        if (startDate || endDate) {
+          return [];
+        }
+      }
+    } else {
+      // If PageViewLog model missing, we cannot apply date filters
+      if (startDate || endDate) {
+        return [];
+      }
+    }
+  }
+  // Apply provider filter directly on PageView if no date range is requested
+  if (provider && provider.trim() && !useLogFilter) {
+    const key = provider.trim().toLowerCase();
+    // Use PostgreSQL JSONB exists operator: providerViews ? key
+    pageViewWhere[Op.and] = [
+      Sequelize.literal(`"providerViews" ? '${key}'`)
+    ];
+  }
+  // Combine pathFilter from logs if any
+  if (pathFilter) {
+    if (pageViewWhere.path) {
+      pageViewWhere.path = {
+        [Op.and]: [pageViewWhere.path, { [Op.in]: pathFilter }],
+      };
+    } else {
+      pageViewWhere.path = { [Op.in]: pathFilter };
+    }
+  }
   const rows = await PageView.findAll({
+    where: pageViewWhere,
     order: [['totalViews', 'DESC']],
   });
-
-  // Latest log per path for last IP / location
+  // Get latest log per path for last IP / location
   const paths = rows.map((r) => r.path);
   const latestByPath = {};
   if (paths.length > 0 && PageViewLog) {
@@ -341,12 +428,11 @@ const getPageViews = async () => {
         }
       }
     } catch (e) {
-      // Table may not exist yet if migration not applied — still return aggregates
       console.error('Failed to load page view logs:', e.message || e);
     }
   }
-
-  return rows.map((row) => {
+  // Build result
+  const result = rows.map((row) => {
     const providerViews = row.providerViews || {};
     const providerTotal = Object.values(providerViews).reduce(
       (sum, n) => sum + (Number(n) || 0),
@@ -376,8 +462,8 @@ const getPageViews = async () => {
       updatedAt: row.updatedAt,
     };
   });
+  return result;
 };
-
 module.exports = {
   getStoreProducts,
   getStoreProductById,

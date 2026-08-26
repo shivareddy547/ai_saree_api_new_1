@@ -115,13 +115,21 @@ const trackPageView = async (req, res, next) => {
 };
 /**
  * GET /api/store/page-views
- * Returns all tracked pages with guest / registered / provider counts
- * and last known IP / location per path.
+ * Query: path, provider, minViews, startDate, endDate
+ * Returns tracked pages with guest / registered / provider counts
+ * and last known IP / location per path, filtered by optional query params.
  * Requires authentication (admin panel).
  */
 const getPageViews = async (req, res, next) => {
   try {
-    const data = await storeService.getPageViews();
+    const filters = {
+      path: req.query.path || undefined,
+      provider: req.query.provider || undefined,
+      minViews: req.query.minViews || undefined,
+      startDate: req.query.startDate || undefined,
+      endDate: req.query.endDate || undefined,
+    };
+    const data = await storeService.getPageViews(filters);
     res.json({
       success: true,
       data,
