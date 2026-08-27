@@ -1,0 +1,11 @@
+const express = require('express');
+const router = express.Router();
+const aiModelController = require('../controllers/aiModelController');
+router.get('/', aiModelController.getAll);
+router.get('/:id', aiModelController.getById);
+router.post('/', aiModelController.create);
+router.put('/:id', aiModelController.update);
+router.patch('/:id/toggle', aiModelController.toggle);
+router.patch('/:id/set-default', aiModelController.setDefault);
+router.delete('/:id', aiModelController.remove);
+module.exports = router;

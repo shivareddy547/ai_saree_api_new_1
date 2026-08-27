@@ -1,0 +1,12 @@
+const express = require('express');
+const router = express.Router();
+const aiProviderController = require('../controllers/aiProviderController');
+router.get('/', aiProviderController.getAll);
+router.get('/:id', aiProviderController.getById);
+router.post('/', aiProviderController.create);
+router.put('/:id', aiProviderController.update);
+router.patch('/:id/toggle', aiProviderController.toggle);
+router.patch('/:id/set-default', aiProviderController.setDefault);
+router.post('/:id/test-connection', aiProviderController.testConnection);
+router.delete('/:id', aiProviderController.remove);
+module.exports = router;

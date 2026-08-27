@@ -65,6 +65,8 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/help-us', require('./routes/helpUsRoutes'));
 app.use('/api/providers', require('./routes/providerRoutes'));
+app.use('/api/ai-providers', require('./routes/aiProviderRoutes'));
+app.use('/api/ai-models', require('./routes/aiModelRoutes'));
 app.use('/api/social', require('./routes/socialRoutes'));
 app.use('/api/categories', require('./routes/categoryRoutes'));
 app.use('/api/store', require('./routes/storeRoutes'));
