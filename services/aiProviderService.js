@@ -10,6 +10,7 @@ const VALID_PROVIDERS = [
   'groq',
   'mistral',
   'bedrock',
+  'grok',
 ];
 const maskSecret = (value) => {
   if (!value || typeof value !== 'string') return null;

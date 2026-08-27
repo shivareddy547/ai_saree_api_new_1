@@ -6,6 +6,7 @@ const AzureProvider = require('./AzureProvider');
 const GroqProvider = require('./GroqProvider');
 const MistralProvider = require('./MistralProvider');
 const BedrockProvider = require('./BedrockProvider');
+const GrokProvider = require('./GrokProvider');
 const BaseProvider = require('./BaseProvider');
 const PROVIDER_MAP = {
   openai: OpenAIProvider,
@@ -16,6 +17,7 @@ const PROVIDER_MAP = {
   groq: GroqProvider,
   mistral: MistralProvider,
   bedrock: BedrockProvider,
+  grok: GrokProvider,
 };
 function createProviderAdapter(providerRecord) {
   const key = (providerRecord.provider || '').toLowerCase();
@@ -44,4 +46,5 @@ module.exports = {
   GroqProvider,
   MistralProvider,
   BedrockProvider,
+  GrokProvider,
 };
