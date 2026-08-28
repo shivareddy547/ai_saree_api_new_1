@@ -1,16 +1,16 @@
 const express = require('express');
 const router = express.Router();
-const aiVideoController = require('../controllers/aiVideoController');
 const authMiddleware = require('../middleware/authMiddleware');
+const aiVideoController = require('../controllers/aiVideoController');
 
 router.use(authMiddleware);
 
-router.post('/generate', aiVideoController.uploadMiddleware, aiVideoController.generate);
-router.post('/tts', aiVideoController.tts);
-router.post('/save', aiVideoController.save);
 router.get('/', aiVideoController.list);
 router.get('/:id', aiVideoController.getById);
-router.post('/:id/reupload-cloudinary', aiVideoController.reupload);
-router.delete('/:id', aiVideoController.remove);
+router.get('/:id/status', aiVideoController.pollStatus);
+router.post('/save', aiVideoController.save);
+router.post('/generate-ai', aiVideoController.generateAi);
+router.post('/generate-grok', aiVideoController.generateGrok);
+router.post('/tts', aiVideoController.tts);
 
 module.exports = router;

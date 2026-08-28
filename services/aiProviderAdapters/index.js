@@ -1,14 +1,14 @@
 const OpenAIProvider = require('./OpenAIProvider');
 const AnthropicProvider = require('./AnthropicProvider');
 const GeminiProvider = require('./GeminiProvider');
-const OllamaProvider = require('./OllamaProvider');
 const AzureProvider = require('./AzureProvider');
+const OllamaProvider = require('./OllamaProvider');
 const GroqProvider = require('./GroqProvider');
 const MistralProvider = require('./MistralProvider');
 const BedrockProvider = require('./BedrockProvider');
 const GrokProvider = require('./GrokProvider');
-const BaseProvider = require('./BaseProvider');
-const PROVIDER_MAP = {
+
+const MAP = {
   openai: OpenAIProvider,
   anthropic: AnthropicProvider,
   gemini: GeminiProvider,
@@ -19,32 +19,30 @@ const PROVIDER_MAP = {
   bedrock: BedrockProvider,
   grok: GrokProvider,
 };
-function createProviderAdapter(providerRecord) {
-  const key = (providerRecord.provider || '').toLowerCase();
-  const AdapterClass = PROVIDER_MAP[key] || BaseProvider;
-  return new AdapterClass({
-    api_key: providerRecord.api_key,
-    api_secret: providerRecord.api_secret,
-    endpoint: providerRecord.endpoint,
-    organization_id: providerRecord.organization_id,
-    project_id: providerRecord.project_id,
-    region: providerRecord.region,
-    timeout: providerRecord.timeout,
-    max_retries: providerRecord.max_retries,
-    metadata: providerRecord.metadata || {},
+
+function createAdapter(providerRow) {
+  if (!providerRow || !providerRow.provider) {
+    const err = new Error('Invalid AI provider configuration');
+    err.status = 400;
+    throw err;
+  }
+  const Cls = MAP[providerRow.provider];
+  if (!Cls) {
+    const err = new Error(`Unsupported AI provider: ${providerRow.provider}`);
+    err.status = 400;
+    throw err;
+  }
+  return new Cls({
+    api_key: providerRow.api_key,
+    api_secret: providerRow.api_secret,
+    endpoint: providerRow.endpoint,
+    organization_id: providerRow.organization_id,
+    project_id: providerRow.project_id,
+    region: providerRow.region,
+    timeout: providerRow.timeout,
+    max_retries: providerRow.max_retries,
+    metadata: providerRow.metadata || {},
   });
 }
-module.exports = {
-  createProviderAdapter,
-  PROVIDER_MAP,
-  BaseProvider,
-  OpenAIProvider,
-  AnthropicProvider,
-  GeminiProvider,
-  OllamaProvider,
-  AzureProvider,
-  GroqProvider,
-  MistralProvider,
-  BedrockProvider,
-  GrokProvider,
-};
+
+module.exports = { createAdapter };
