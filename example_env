@@ -1,0 +1,52 @@
+# Server Configuration
+PORT=5000
+NODE_ENV=development
+
+# Database Configuration
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=my-auth-app-final
+DB_USER=postgres
+DB_PASSWORD=postgres
+
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/my_new_db_seed
+TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/my_new_db_seed_test
+
+# JWT Configuration
+JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
+JWT_REFRESH_SECRET=your-super-secret-refresh-key-change-this-in-production
+
+# Email Configuration
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=your-app-password
+SMTP_FROM=noreply@yourapp.com
+
+# Frontend URL
+FRONTEND_URL=https://awfully-quick-monkfish.ngrok-free.app/
+INSTAGRAM_REDIRECT_URI=https://awfully-quick-monkfish.ngrok-free.app/dashboard
+REACT_APP_API_URL=https://brave-chicken-roughly.ngrok-free.app/api
+
+# SMS Configuration (Twilio example)
+TWILIO_ACCOUNT_SID=your-twilio-sid
+TWILIO_AUTH_TOKEN=your-twilio-token
+TWILIO_PHONE_NUMBER=+1234567890
+
+
+
+INSTAGRAM_API_VERSION=v25.0
+INSTAGRAM_API_BASE=https://graph.instagram.com
+
+
+
+#INSTAGRAM_APP_ID=1902079763801149
+#INSTAGRAM_APP_SECRET=0038deb852f537fd1070da99fc312c84
+INSTAGRAM_APP_ID=1902079763801149
+INSTAGRAM_APP_SECRET=0038deb852f537fd1070da99fc312c84
+
+
+REACT_APP_CLOUDINARY_CLOUD_NAME=lovecart
+REACT_APP_CLOUDINARY_API_KEY=294643716448519
+REACT_APP_CLOUDINARY_API_SECRET=cDqrjR6rxnH1kp4-5bZOJz3y9Hg
+REACT_APP_CLOUDINARY_UPLOAD_PRESET="product_videos"
