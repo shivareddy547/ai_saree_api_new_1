@@ -9,9 +9,11 @@
 ## API Integration (Code Analysis)
 - API Libraries Found:
   - axios
+  - fetch
 - Usage Patterns Detected:
   - axios calls
+  - native fetch
 - Sample File Containing API Calls:
-  - src/pages/CreateProduct.tsx
+  - src/components/PostToInstagram.tsx
 
 ## Other Libraries

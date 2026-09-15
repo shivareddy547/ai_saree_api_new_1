@@ -1,0 +1,28 @@
+'use strict';
+module.exports = {
+  up: async (queryInterface, Sequelize) => {
+    const tables = await queryInterface.showAllTables();
+    const list = tables.map((t) => (typeof t === 'object' ? t.tableName : t));
+    if (list.includes('pickup_locations')) return;
+    await queryInterface.createTable('pickup_locations', {
+      id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true, allowNull: false },
+      name: { type: Sequelize.STRING, allowNull: false },
+      street_address: { type: Sequelize.STRING, allowNull: false },
+      apartment: { type: Sequelize.STRING, allowNull: true },
+      city: { type: Sequelize.STRING, allowNull: false },
+      state: { type: Sequelize.STRING, allowNull: true },
+      zip_code: { type: Sequelize.STRING, allowNull: true },
+      country: { type: Sequelize.STRING, allowNull: false, defaultValue: 'India' },
+      phone: { type: Sequelize.STRING, allowNull: true },
+      is_active: { type: Sequelize.BOOLEAN, allowNull: false, defaultValue: true },
+      is_default: { type: Sequelize.BOOLEAN, allowNull: false, defaultValue: false },
+      createdAt: { type: Sequelize.DATE, allowNull: false },
+      updatedAt: { type: Sequelize.DATE, allowNull: false },
+    });
+  },
+  down: async (queryInterface) => {
+    const tables = await queryInterface.showAllTables();
+    const list = tables.map((t) => (typeof t === 'object' ? t.tableName : t));
+    if (list.includes('pickup_locations')) await queryInterface.dropTable('pickup_locations');
+  },
+};
