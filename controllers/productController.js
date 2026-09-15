@@ -28,6 +28,50 @@ class ProductController {
       next(error);
     }
   }
+  async createProduct(req, res, next) {
+    try {
+      const productData = req.body;
+      // Add the logged-in user's ID to the product data
+      if (req.user && req.user.id) {
+        productData.userId = req.user.id;
+      }
+      const product = await productService.createProduct(productData);
+      res.status(201).json({
+        success: true,
+        data: product,
+      });
+    } catch (error) {
+      if (error.status) {
+        return res.status(error.status).json({
+          success: false,
+          message: error.message,
+        });
+      }
+      next(error);
+    }
+  }
+  async updateProduct(req, res, next) {
+    try {
+      const { id } = req.params;
+      const productData = req.body;
+      if (req.user && req.user.id) {
+        productData.userId = req.user.id;
+      }
+      const product = await productService.updateProduct(id, productData);
+      res.status(200).json({
+        success: true,
+        data: product,
+      });
+    } catch (error) {
+      if (error.status) {
+        return res.status(error.status).json({
+          success: false,
+          message: error.message,
+        });
+      }
+      next(error);
+    }
+  }
   async deleteProduct(req, res, next) {
     try {
       const { id } = req.params;
